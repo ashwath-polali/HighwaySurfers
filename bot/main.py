@@ -14,7 +14,8 @@ import traceback
 import cv2
 
 from .config import Config, load_calibration
-from .capture import open_capture, activate_game
+from .capture import (open_capture, activate_game, get_game_hwnd,
+                      is_foreground, focus_hwnd)
 from .vision import Vision
 from .tracker import Tracker
 from .planner import Planner
@@ -41,6 +42,18 @@ def _log_crash(cfg, where: str, extra: str = "") -> None:
     except OSError:
         pass
     print(f"[crash] {where}: {tb.strip().splitlines()[-1] if tb.strip() else 'unknown'}")
+
+
+def _click_canvas(region) -> None:
+    """Click the middle of the road to give the 3D view keyboard focus, so WASD
+    drives the car instead of typing into the chat box."""
+    import pydirectinput
+
+    l, t, r, b = region
+    x = int(l + (r - l) * 0.5)
+    y = int(t + (b - t) * 0.45)
+    pydirectinput.moveTo(x, y)
+    pydirectinput.click()
 
 
 def _place_debug_windows(names, region) -> None:
@@ -137,6 +150,10 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     telemetry = Telemetry(cfg)
     hotkeys.start()
     hotkeys.autopilot = autostart
+    try:
+        hwnd = get_game_hwnd(cfg.window_title)
+    except Exception:
+        hwnd = None
 
     print(f"[drive] latency={cal['latency_ms']:.0f}ms "
           f"vmax={cal['steer_vmax_px_s']:.0f}px/s coast={cal['steer_coast_s']:.2f}s")
@@ -155,7 +172,9 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
     fps, prev_t = 0.0, None
     last_brake_t = 0.0
+    last_focus_t = 0.0
     crash_streak = 0
+    was_ui = True   # force a canvas-focus click when the first run begins
     try:
         while not hotkeys.quit:
             frame, t = capture.read()
@@ -169,14 +188,31 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
             # Death screen / main menu? Click back into the run, skip driving.
             if hotkeys.autopilot and navigator.step(frame, t, controls):
+                was_ui = True
                 continue
+            # Just came out of a menu/death screen into a live run: focus the
+            # 3D view so keys drive the car instead of landing in chat.
+            if hotkeys.autopilot and was_ui:
+                was_ui = False
+                if hwnd:
+                    focus_hwnd(hwnd)
+                _click_canvas(capture.region)
+                last_focus_t = t
 
             try:
                 per = vision.process(frame, want_masks=overlay)
                 tracks = tracker.update(per.blobs)
                 plan = planner.plan(per, tracks, fps or cfg.target_fps)
 
-                if hotkeys.autopilot:
+                game_focused = hwnd is None or is_foreground(hwnd)
+                if hotkeys.autopilot and not game_focused:
+                    # Game lost focus: never send keys (they would leak into
+                    # chat or another app). Reclaim focus at most once a second.
+                    controls.release_all()
+                    if t - last_focus_t > 1.0:
+                        focus_hwnd(hwnd)
+                        last_focus_t = t
+                elif hotkeys.autopilot:
                     # throttle
                     if plan.brake_tap_ms > 0 and t - last_brake_t > 0.35:
                         controls.set_key(GAS, False)

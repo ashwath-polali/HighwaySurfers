@@ -75,7 +75,9 @@ def profile_shift(prev: np.ndarray, cur: np.ndarray, max_shift: int) -> Optional
     best = int(np.argmax(scores))
     if scores[best] < 0.25:
         return None
-    return _subpixel_peak(scores, best) - max_shift
+    # plain float, not np.float32: this value flows into telemetry (json) and
+    # the planner's safe-distance calc downstream.
+    return float(_subpixel_peak(scores, best) - max_shift)
 
 
 class Vision:

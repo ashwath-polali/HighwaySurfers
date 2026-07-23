@@ -63,13 +63,54 @@ def find_game_client_region(window_title: str) -> tuple:
     return (left, top, right, bottom)
 
 
+def get_game_hwnd(window_title: str):
+    """Win32 handle of the game window, for focus checks and key routing."""
+    return _find_window(window_title)._hWnd
+
+
+def is_foreground(hwnd) -> bool:
+    """True when the game window currently has keyboard focus."""
+    fg = ctypes.windll.user32.GetForegroundWindow()
+    return bool(fg) and int(fg) == int(hwnd)
+
+
+def focus_hwnd(hwnd) -> bool:
+    """Force the window to the foreground and return whether it took.
+
+    pygetwindow's .activate() is unreliable on Win11 (it flashes the taskbar or
+    minimizes instead of focusing). Windows blocks SetForegroundWindow from a
+    background process unless we briefly attach our input queue to the current
+    foreground thread's, which is what this does.
+    """
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    if u.IsIconic(hwnd):
+        u.ShowWindow(hwnd, 9)  # SW_RESTORE
+    fg = u.GetForegroundWindow()
+    if fg and int(fg) == int(hwnd):
+        return True
+    cur = k.GetCurrentThreadId()
+    fg_thread = u.GetWindowThreadProcessId(fg, 0) if fg else 0
+    tgt_thread = u.GetWindowThreadProcessId(hwnd, 0)
+    try:
+        if fg_thread:
+            u.AttachThreadInput(cur, fg_thread, True)
+        u.AttachThreadInput(cur, tgt_thread, True)
+        u.BringWindowToTop(hwnd)
+        u.SetForegroundWindow(hwnd)
+    finally:
+        if fg_thread:
+            u.AttachThreadInput(cur, fg_thread, False)
+        u.AttachThreadInput(cur, tgt_thread, False)
+    fg2 = u.GetForegroundWindow()
+    return bool(fg2) and int(fg2) == int(hwnd)
+
+
 def activate_game(window_title: str) -> None:
     """Bring the game to the foreground so injected keys reach it."""
     try:
-        _find_window(window_title).activate()
+        focus_hwnd(get_game_hwnd(window_title))
     except Exception:
-        # pygetwindow raises spuriously on Win11 sometimes; a click from the
-        # user achieves the same thing.
         pass
 
 
