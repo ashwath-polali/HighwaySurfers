@@ -69,51 +69,23 @@ def get_game_hwnd(window_title: str):
 
 
 def is_foreground(hwnd) -> bool:
-    """True when the game window currently has keyboard focus."""
+    """True when the game window currently has keyboard focus.
+
+    This is read-only: it never touches window state. We deliberately do NOT
+    force the window to the foreground. A fullscreen game minimizes itself when
+    another process fights it for focus, so the bot stays passive: it drives
+    only while the player already has the game focused, and otherwise waits.
+    """
     u = ctypes.windll.user32
     u.GetForegroundWindow.restype = wintypes.HWND  # full handle, not a truncated int
     fg = u.GetForegroundWindow()
     return fg is not None and int(fg) == int(hwnd)
 
 
-def focus_hwnd(hwnd) -> bool:
-    """Force the window to the foreground and return whether it took.
-
-    pygetwindow's .activate() is unreliable on Win11 (it flashes the taskbar or
-    minimizes instead of focusing). Windows blocks SetForegroundWindow from a
-    background process unless we briefly attach our input queue to the current
-    foreground thread's, which is what this does.
-    """
-    u = ctypes.windll.user32
-    k = ctypes.windll.kernel32
-    if u.IsIconic(hwnd):
-        u.ShowWindow(hwnd, 9)  # SW_RESTORE
-    fg = u.GetForegroundWindow()
-    if fg and int(fg) == int(hwnd):
-        return True
-    cur = k.GetCurrentThreadId()
-    fg_thread = u.GetWindowThreadProcessId(fg, 0) if fg else 0
-    tgt_thread = u.GetWindowThreadProcessId(hwnd, 0)
-    try:
-        if fg_thread:
-            u.AttachThreadInput(cur, fg_thread, True)
-        u.AttachThreadInput(cur, tgt_thread, True)
-        u.BringWindowToTop(hwnd)
-        u.SetForegroundWindow(hwnd)
-    finally:
-        if fg_thread:
-            u.AttachThreadInput(cur, fg_thread, False)
-        u.AttachThreadInput(cur, tgt_thread, False)
-    fg2 = u.GetForegroundWindow()
-    return bool(fg2) and int(fg2) == int(hwnd)
-
-
 def activate_game(window_title: str) -> None:
-    """Bring the game to the foreground so injected keys reach it."""
-    try:
-        focus_hwnd(get_game_hwnd(window_title))
-    except Exception:
-        pass
+    """No-op kept for API compatibility. The bot never forces window focus (that
+    minimizes a fullscreen game); the player keeps the game focused instead."""
+    return
 
 
 class Capture:

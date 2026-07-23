@@ -14,8 +14,7 @@ import traceback
 import cv2
 
 from .config import Config, load_calibration
-from .capture import (open_capture, activate_game, get_game_hwnd,
-                      is_foreground, focus_hwnd)
+from .capture import open_capture, get_game_hwnd, is_foreground
 from .vision import Vision
 from .tracker import Tracker
 from .planner import Planner
@@ -104,7 +103,6 @@ def mode_probe(cfg) -> None:
     capture = open_capture(cfg)
     frame = _first_frame(capture)
     vision = Vision(cfg, frame.shape)
-    activate_game(cfg.window_title)
     try:
         run_probe(cfg, capture, vision)
     finally:
@@ -116,7 +114,6 @@ def mode_calibrate(cfg) -> None:
     capture = open_capture(cfg)
     frame = _first_frame(capture)
     vision = Vision(cfg, frame.shape)
-    activate_game(cfg.window_title)
     try:
         run_steer_calibration(cfg, capture, vision, load_calibration(cfg))
     finally:
@@ -160,7 +157,8 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
         print("[drive] no probe data found, using default latency.")
     print(f"[drive] autopilot starts {'ON' if autostart else 'OFF'}. "
           "F8 = autopilot on/off, F9 = panic quit.")
-    activate_game(cfg.window_title)
+    print("[drive] KEEP THE GAME WINDOW FOCUSED. The bot only acts while the "
+          "game is the active window; click it now.")
     if overlay:
         _place_debug_windows(["bot"], capture.region)
     for i in (3, 2, 1):
@@ -171,7 +169,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     canvas_x, canvas_y = int(l + (r - l) * 0.5), int(tp + (b - tp) * 0.45)
 
     fps, prev_t = 0.0, None
-    last_brake_t = last_steer_t = last_focus_t = 0.0
+    last_brake_t = last_steer_t = last_hint_t = 0.0
     crash_streak = 0
     was_ui = True   # click the road to grab canvas focus when a run begins
     try:
@@ -185,17 +183,18 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                 fps = 0.9 * fps + 0.1 * inst if fps else inst
             prev_t = t
 
-            # HARD GATE: if autopilot is on but the game is not the foreground
-            # window, send nothing at all. Just try to reclaim focus (rate
-            # limited) and skip the frame. This is what stops keys and clicks
-            # from leaking into VS Code / chat / anywhere else.
+            # HARD GATE (passive): if autopilot is on but the game is not the
+            # foreground window, do nothing at all — no keys, no clicks, and no
+            # window manipulation (forcing focus minimizes a fullscreen game).
+            # Just wait for the player to focus the game.
             if hotkeys.autopilot and not focused():
                 controls.release_all()
-                if t - last_focus_t > 0.6 and hwnd is not None:
-                    focus_hwnd(hwnd)
-                    last_focus_t = t
-                was_ui = True
                 controls.update()
+                if t - last_hint_t > 4.0:
+                    print("[drive] waiting — click the game window to let the "
+                          "bot drive (it will not touch anything else).")
+                    last_hint_t = t
+                was_ui = True
                 continue
 
             # Death screen / main menu? Click back into the run (gated), skip driving.
