@@ -70,8 +70,10 @@ def get_game_hwnd(window_title: str):
 
 def is_foreground(hwnd) -> bool:
     """True when the game window currently has keyboard focus."""
-    fg = ctypes.windll.user32.GetForegroundWindow()
-    return bool(fg) and int(fg) == int(hwnd)
+    u = ctypes.windll.user32
+    u.GetForegroundWindow.restype = wintypes.HWND  # full handle, not a truncated int
+    fg = u.GetForegroundWindow()
+    return fg is not None and int(fg) == int(hwnd)
 
 
 def focus_hwnd(hwnd) -> bool:

@@ -11,8 +11,6 @@ Buttons are found by color + shape, not position: solid saturated blob, wide
 aspect, lower 60% of the screen, sane size, with white text inside. That last
 check is what keeps grass (also green, also flat-shaded) out.
 """
-import time
-
 import cv2
 import numpy as np
 
@@ -96,18 +94,10 @@ class UINavigator:
         controls.release_all()  # never drive while a UI is up
         if self._streak >= 2 and now - self.last_click_t > 1.2:
             l, t, _r, _b = self.region
-            self._click(int(l + xy[0]), int(t + xy[1]))
-            self.last_click_t = now
-            print(f"[autoplay] {state} screen -> clicked "
-                  f"{'Menu' if state == 'death' else 'Play'}")
+            # controls.click is gated on the game being focused; it only fires
+            # (and we only count it) when the click actually lands in the game.
+            if controls.click(int(l + xy[0]), int(t + xy[1])):
+                self.last_click_t = now
+                print(f"[autoplay] {state} screen -> clicked "
+                      f"{'Menu' if state == 'death' else 'Play'}")
         return state
-
-    @staticmethod
-    def _click(x: int, y: int) -> None:
-        import pydirectinput
-
-        pydirectinput.moveTo(x, y)
-        time.sleep(0.05)
-        pydirectinput.click()
-        # park the cursor low so it never hovers/occludes a button
-        pydirectinput.moveTo(x, y + 60)

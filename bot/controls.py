@@ -24,13 +24,24 @@ ALL_KEYS = (GAS, BRAKE, LEFT, RIGHT)
 
 
 class Controls:
-    def __init__(self):
+    def __init__(self, gate=None):
+        # gate() -> bool: only send input when it returns True (game is the
+        # foreground window). This is the hard safety net that stops keystrokes
+        # and clicks from leaking into other apps when the game isn't focused.
+        self._gate = gate
         self._down = set()
         self._tap_until = {}  # key -> perf_counter deadline
         self._lock = threading.Lock()
 
+    def _can_send(self) -> bool:
+        return self._gate is None or self._gate()
+
     # -- low level ---------------------------------------------------------
     def _key_down(self, key: str) -> None:
+        # Never press a key unless the game is focused: a stray keyDown is what
+        # types "wawawa" into chat / another window.
+        if not self._can_send():
+            return
         if key not in self._down:
             pydirectinput.keyDown(key)
             self._down.add(key)
@@ -69,6 +80,17 @@ class Controls:
         with self._lock:
             for k in list(self._down):
                 self._key_up(k)
+
+    def click(self, x: int, y: int) -> bool:
+        """Move + click, but only when the game is focused. Returns whether it
+        actually clicked so callers don't assume a UI button was pressed."""
+        if not self._can_send():
+            return False
+        pydirectinput.moveTo(int(x), int(y))
+        time.sleep(0.03)
+        pydirectinput.click()
+        pydirectinput.moveTo(int(x), int(y) + 60)  # park cursor off any button
+        return True
 
     def held(self, key: str) -> bool:
         return key in self._down

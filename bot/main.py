@@ -44,18 +44,6 @@ def _log_crash(cfg, where: str, extra: str = "") -> None:
     print(f"[crash] {where}: {tb.strip().splitlines()[-1] if tb.strip() else 'unknown'}")
 
 
-def _click_canvas(region) -> None:
-    """Click the middle of the road to give the 3D view keyboard focus, so WASD
-    drives the car instead of typing into the chat box."""
-    import pydirectinput
-
-    l, t, r, b = region
-    x = int(l + (r - l) * 0.5)
-    y = int(t + (b - t) * 0.45)
-    pydirectinput.moveTo(x, y)
-    pydirectinput.click()
-
-
 def _place_debug_windows(names, region) -> None:
     """Park debug windows OUTSIDE the capture region. Both capture backends grab
     a rectangle of the desktop, so a window sitting over the game would be warped
@@ -144,38 +132,48 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     tracker = Tracker(cfg)
     cal = load_calibration(cfg)
     planner = Planner(cfg, cal)
-    controls = Controls()
     hotkeys = Hotkeys()
     navigator = UINavigator(capture.region)
     telemetry = Telemetry(cfg)
-    hotkeys.start()
-    hotkeys.autopilot = autostart
     try:
         hwnd = get_game_hwnd(cfg.window_title)
     except Exception:
         hwnd = None
 
+    # The single source of truth for "may we send input right now": only when
+    # the game window is the foreground window. Controls enforces this on every
+    # key/click, and the loop below also skips whole frames when it's false, so
+    # nothing can leak into another app.
+    def focused() -> bool:
+        return hwnd is not None and is_foreground(hwnd)
+    controls = Controls(gate=focused)
+
+    hotkeys.start()
+    hotkeys.autopilot = autostart
+
     print(f"[drive] latency={cal['latency_ms']:.0f}ms "
           f"vmax={cal['steer_vmax_px_s']:.0f}px/s coast={cal['steer_coast_s']:.2f}s")
+    if hwnd is None:
+        print("[drive] WARNING: could not find the game window; input stays "
+              "disabled until it is open. Nothing will be typed anywhere.")
     if "latency_samples_ms" not in cal:
-        print("[drive] WARNING: no probe data found, using default latency. "
-              "Run `python run.py probe` for real numbers.")
+        print("[drive] no probe data found, using default latency.")
     print(f"[drive] autopilot starts {'ON' if autostart else 'OFF'}. "
           "F8 = autopilot on/off, F9 = panic quit.")
     activate_game(cfg.window_title)
     if overlay:
         _place_debug_windows(["bot"], capture.region)
-    # Grace period so the game settles into the foreground before keys start.
     for i in (3, 2, 1):
         print(f"[drive] taking control in {i}...")
         time.sleep(1.0)
 
+    l, tp, r, b = capture.region
+    canvas_x, canvas_y = int(l + (r - l) * 0.5), int(tp + (b - tp) * 0.45)
+
     fps, prev_t = 0.0, None
-    last_brake_t = 0.0
-    last_steer_t = 0.0
-    last_focus_t = 0.0
+    last_brake_t = last_steer_t = last_focus_t = 0.0
     crash_streak = 0
-    was_ui = True   # force a canvas-focus click when the first run begins
+    was_ui = True   # click the road to grab canvas focus when a run begins
     try:
         while not hotkeys.quit:
             frame, t = capture.read()
@@ -187,33 +185,36 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                 fps = 0.9 * fps + 0.1 * inst if fps else inst
             prev_t = t
 
-            # Death screen / main menu? Click back into the run, skip driving.
+            # HARD GATE: if autopilot is on but the game is not the foreground
+            # window, send nothing at all. Just try to reclaim focus (rate
+            # limited) and skip the frame. This is what stops keys and clicks
+            # from leaking into VS Code / chat / anywhere else.
+            if hotkeys.autopilot and not focused():
+                controls.release_all()
+                if t - last_focus_t > 0.6 and hwnd is not None:
+                    focus_hwnd(hwnd)
+                    last_focus_t = t
+                was_ui = True
+                controls.update()
+                continue
+
+            # Death screen / main menu? Click back into the run (gated), skip driving.
             if hotkeys.autopilot and navigator.step(frame, t, controls):
                 was_ui = True
+                controls.update()
                 continue
-            # Just came out of a menu/death screen into a live run: focus the
-            # 3D view so keys drive the car instead of landing in chat.
+            # First live frame after a menu: click the road so keys drive the
+            # car instead of landing in the chat box.
             if hotkeys.autopilot and was_ui:
                 was_ui = False
-                if hwnd:
-                    focus_hwnd(hwnd)
-                _click_canvas(capture.region)
-                last_focus_t = t
+                controls.click(canvas_x, canvas_y)
 
             try:
                 per = vision.process(frame, want_masks=overlay)
                 tracks = tracker.update(per.blobs)
                 plan = planner.plan(per, tracks, fps or cfg.target_fps)
 
-                game_focused = hwnd is None or is_foreground(hwnd)
-                if hotkeys.autopilot and not game_focused:
-                    # Game lost focus: never send keys (they would leak into
-                    # chat or another app). Reclaim focus at most once a second.
-                    controls.release_all()
-                    if t - last_focus_t > 1.0:
-                        focus_hwnd(hwnd)
-                        last_focus_t = t
-                elif hotkeys.autopilot:
+                if hotkeys.autopilot:
                     # throttle
                     if plan.brake_tap_ms > 0 and t - last_brake_t > 0.35:
                         controls.set_key(GAS, False)
