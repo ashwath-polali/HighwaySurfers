@@ -76,7 +76,11 @@ class Config:
     # scales with speed. The bot commits to a lane and only re-plans when the
     # current lane is actually threatened, instead of chasing the best lane.
     lookahead_extra_s: float = 0.20   # prediction margin on top of measured latency
-    dy_floor: float = 1.5             # min forward flow (px/frame) used for TTC
+    # Collision timing comes from each obstacle's tracked closing speed, not the
+    # dashed-line forward flow (that aliases and reads ~0). A very close obstacle
+    # is a threat regardless of measured closing speed.
+    min_closing_px_s: float = 25.0    # obstacle must close faster than this to time it
+    react_dist_px: float = 130.0      # any obstacle nearer than this = act now
     ttc_danger_s: float = 1.10        # car this soon in our lane -> plan a move
     ttc_brake_s: float = 0.45         # nothing reachable safer than this -> brake
     ttc_change_margin_s: float = 0.30  # a target lane must beat current by this much

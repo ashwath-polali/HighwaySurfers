@@ -62,25 +62,31 @@ class Planner:
             return Plan("CRUISE", 0, None, True, False, None, [], [], 0.0)
 
         lookahead = (self.cal["latency_ms"] / 1000.0 + cfg.lookahead_extra_s) * fps
-        dy = max(per.dy, cfg.dy_floor)          # forward flow, px/frame
-        speed_px_s = dy * fps
 
-        # --- per-lane nearest obstacle (against PREDICTED positions) ---
+        # --- per-lane nearest obstacle + collision time from its closing speed ---
         own_y = cfg.bev_h
         clear = [INF] * n
+        ttc = [INF] * n
         side_block = [False] * n
         for tr in tracks:
-            px, py = tr.predict(lookahead)
+            px, py = tr.predict(lookahead)      # predicted -> which lane, side-block
+            dist_now = own_y - tr.y
+            closing = tr.vy * fps               # px/s, + = coming toward us
+            ttc_tr = (dist_now / closing
+                      if closing > cfg.min_closing_px_s and dist_now > 0 else INF)
             for li in self._lanes_of(px, tr.w, lanes):
-                dist = own_y - py
-                if dist > 0:
-                    clear[li] = min(clear[li], dist)
-                if -cfg.side_margin_behind <= dist <= cfg.side_margin_ahead:
+                if dist_now > 0:
+                    clear[li] = min(clear[li], dist_now)
+                ttc[li] = min(ttc[li], ttc_tr)
+                if -cfg.side_margin_behind <= own_y - py <= cfg.side_margin_ahead:
                     side_block[li] = True
 
-        # TTC per lane (seconds until we reach that obstacle at current speed)
-        ttc = [c / speed_px_s if c != INF else INF for c in clear]
-        danger_dist = cfg.ttc_danger_s * speed_px_s
+        # Anything very close counts as an immediate threat even if its measured
+        # closing speed is low/noisy (the distance floor).
+        for li in range(n):
+            if clear[li] < cfg.react_dist_px:
+                ttc[li] = min(ttc[li], cfg.ttc_danger_s * 0.9)
+        danger_dist = cfg.react_dist_px
 
         cur = min(max(per.own_lane, 0), n - 1)
         self.frames_in_state += 1
