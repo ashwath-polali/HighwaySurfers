@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+runs/
+calibration.json
+debug_*.jpg
+example.txt
