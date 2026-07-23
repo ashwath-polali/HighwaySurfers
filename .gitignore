@@ -5,3 +5,4 @@ runs/
 calibration.json
 debug_*.jpg
 example.txt
+crash.log

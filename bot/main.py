@@ -7,7 +7,9 @@
     python run.py drive       autopilot (F8 toggles, F9 panic-quits)
 """
 import argparse
+import os
 import time
+import traceback
 
 import cv2
 
@@ -26,6 +28,19 @@ def _first_frame(capture):
         if frame is not None:
             return frame
     raise RuntimeError("no frames from capture")
+
+
+def _log_crash(cfg, where: str, extra: str = "") -> None:
+    """Append a full traceback to crash.log so an unattended run is diagnosable."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "crash.log")
+    tb = traceback.format_exc()
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"=== crash in {where} @ frame ===\n{extra}\n{tb}\n")
+    except OSError:
+        pass
+    print(f"[crash] {where}: {tb.strip().splitlines()[-1] if tb.strip() else 'unknown'}")
 
 
 def _place_debug_windows(names, region) -> None:
@@ -140,6 +155,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
     fps, prev_t = 0.0, None
     last_brake_t = 0.0
+    crash_streak = 0
     try:
         while not hotkeys.quit:
             frame, t = capture.read()
@@ -155,41 +171,53 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
             if hotkeys.autopilot and navigator.step(frame, t, controls):
                 continue
 
-            per = vision.process(frame, want_masks=overlay)
-            tracks = tracker.update(per.blobs)
-            plan = planner.plan(per, tracks, fps or cfg.target_fps)
+            try:
+                per = vision.process(frame, want_masks=overlay)
+                tracks = tracker.update(per.blobs)
+                plan = planner.plan(per, tracks, fps or cfg.target_fps)
 
-            if hotkeys.autopilot:
-                # throttle
-                if plan.brake_tap_ms > 0 and t - last_brake_t > 0.35:
-                    controls.set_key(GAS, False)
-                    controls.tap(BRAKE, plan.brake_tap_ms)
-                    last_brake_t = t
+                if hotkeys.autopilot:
+                    # throttle
+                    if plan.brake_tap_ms > 0 and t - last_brake_t > 0.35:
+                        controls.set_key(GAS, False)
+                        controls.tap(BRAKE, plan.brake_tap_ms)
+                        last_brake_t = t
+                    else:
+                        controls.set_key(GAS, plan.gas)
+                    # steering: exactly one of L/R/none
+                    if plan.steer_key == LEFT:
+                        controls.set_key(RIGHT, False)
+                        controls.set_key(LEFT, True)
+                    elif plan.steer_key == RIGHT:
+                        controls.set_key(LEFT, False)
+                        controls.set_key(RIGHT, True)
+                    else:
+                        controls.set_key(LEFT, False)
+                        controls.set_key(RIGHT, False)
                 else:
-                    controls.set_key(GAS, plan.gas)
-                # steering: exactly one of L/R/none
-                if plan.steer_key == LEFT:
-                    controls.set_key(RIGHT, False)
-                    controls.set_key(LEFT, True)
-                elif plan.steer_key == RIGHT:
-                    controls.set_key(LEFT, False)
-                    controls.set_key(RIGHT, True)
-                else:
-                    controls.set_key(LEFT, False)
-                    controls.set_key(RIGHT, False)
-            else:
+                    controls.release_all()
+                controls.update()
+
+                keys = ("W" if controls.held(GAS) else "-") + \
+                       ("S" if controls.held(BRAKE) else "-") + controls.steer_state()
+                telemetry.log(per, plan, fps, hotkeys.autopilot, keys)
+
+                if overlay:
+                    vis, bev_vis = vision.draw_debug(frame, per, plan)
+                    telemetry.maybe_dump_frame(vis, bev_vis)
+                    cv2.imshow("bot", bev_vis)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                crash_streak = 0
+            except Exception:
+                # A single bad frame shouldn't kill an unattended run: log the
+                # full traceback, drop the keys, and keep going. Bail only if
+                # every frame is failing (a real, non-transient bug).
+                crash_streak += 1
+                _log_crash(cfg, "drive-loop", f"fps={fps:.1f} streak={crash_streak}")
                 controls.release_all()
-            controls.update()
-
-            keys = ("W" if controls.held(GAS) else "-") + \
-                   ("S" if controls.held(BRAKE) else "-") + controls.steer_state()
-            telemetry.log(per, plan, fps, hotkeys.autopilot, keys)
-
-            if overlay:
-                vis, bev_vis = vision.draw_debug(frame, per, plan)
-                telemetry.maybe_dump_frame(vis, bev_vis)
-                cv2.imshow("bot", bev_vis)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                if crash_streak >= 30:
+                    print("[drive] too many consecutive errors; stopping. See crash.log.")
                     break
     finally:
         controls.release_all()
