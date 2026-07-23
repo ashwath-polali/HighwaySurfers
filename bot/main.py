@@ -253,7 +253,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                 save_this = (hotkeys.autopilot and frame_saves < 150
                              and frame_no % 12 == 0)
                 per = vision.process(frame, want_masks=(overlay or save_this))
-                tracks = tracker.update(per.blobs)
+                tracks = tracker.update(per.obstacles)
                 plan = planner.plan(per, tracks, fps or cfg.target_fps)
                 proc_ms = (time.perf_counter() - t_proc) * 1000.0
 

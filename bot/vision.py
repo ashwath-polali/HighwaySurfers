@@ -1,21 +1,19 @@
-"""Perception: frame -> BEV warp -> road-edge fit -> RECTIFIED road view ->
-lane model, obstacles, flow.
+"""Perception: frame -> fixed bird's-eye view -> road region -> obstacles.
 
-Core trick: the game world is flat-shaded. The road is uniform gray, lane
-markings are white. Inside the road, ANYTHING that is neither gray nor white
-is an obstacle. No ML, nothing to break when new car models appear.
+Rebuilt to drop the road-edge fit, which drifted (locking onto grass, skewing
+the whole view) and corrupted everything downstream. The new method has nothing
+to mislock:
 
-Rectification: the capture trapezoid is deliberately generous (the camera pans
-as the car changes lanes), so in raw BEV the road edges are slanted lines and
-grass/buildings intrude near the horizon. Each frame we fit left(y)/right(y)
-edge lines and horizontally remap every row so the road spans the full raster
-width. In rectified space:
-  - lane lines are vertical, lane width constant,
-  - off-road content is geometrically gone,
-  - the car's own position IS its x within the road. own_x moves as the car
-    moves, and own_vx (+ = rightward, px/frame) is the steering feedback signal.
+  1. warpPerspective the road trapezoid to a fixed top-down raster (STABLE: a
+     constant transform, never re-fit per frame).
+  2. Road = the largest connected gray-ish region (road + lane lines). Grass and
+     buildings are a different color, so they fall outside it.
+  3. Fill each road row left-edge..right-edge so car-shaped holes are inside the
+     road region; obstacles are the colored (non-gray, non-white) blobs in there.
 
-Coordinates: x 0..bev_w = road left..right edge; y 0..bev_h far..near.
+The player's car sits at a FIXED spot: bottom-center, (bev_w/2, bev_h). Obstacles
+are reported in this same fixed space, so the planner reasons purely about where
+cars are relative to us, with no lateral-position estimate to go wrong.
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -26,58 +24,12 @@ import numpy as np
 
 @dataclass
 class Perception:
-    blobs: list                    # [(cx, cy_bottom, w, h, area), ...] rectified px
-    road_left: float               # rectified: always 0 (kept for telemetry)
-    road_right: float              # rectified: always bev_w
-    lane_phase: float              # boundary model: boundary_i = phase + i*width
-    lane_width: float
-    lane_centers: list             # rectified x of each lane center
-    own_x: float                   # rectified x of own car, smoothed (moves with the car!)
-    own_x_raw: float               # unsmoothed per-frame measurement (calibration)
-    own_vx: float                  # px/frame, + = car drifting right
-    own_lane: int
-    dy: float                      # forward flow px/frame (+ = moving forward)
-    edge_quality: float            # 0..1, how confidently the road edges fit
+    obstacles: list        # (cx, cy_bottom, w, h, area) in fixed BEV
+    road_left: float       # road bounds near the car (bottom rows), fixed BEV
+    road_right: float
+    car_x: float           # bev_w / 2 (constant)
+    road_quality: float    # fraction of rows that found road (health metric)
     masks: Optional[dict] = None
-
-
-def _subpixel_peak(scores: np.ndarray, idx: int) -> float:
-    if idx <= 0 or idx >= len(scores) - 1:
-        return float(idx)
-    a, b, c = scores[idx - 1], scores[idx], scores[idx + 1]
-    denom = a - 2 * b + c
-    if abs(denom) < 1e-9:
-        return float(idx)
-    return idx + 0.5 * (a - c) / denom
-
-
-def profile_shift(prev: np.ndarray, cur: np.ndarray, max_shift: int) -> Optional[float]:
-    """How far did `prev`'s content move to become `cur`? + = right/down.
-    Normalized cross-correlation, subpixel refined. Returns None when there
-    isn't enough signal."""
-    if prev is None or cur is None or len(prev) != len(cur):
-        return None
-    p = prev.astype(np.float32)
-    c = cur.astype(np.float32)
-    if p.sum() < 20 or c.sum() < 20:
-        return None
-    p = p - p.mean()
-    c = c - c.mean()
-    n = len(p)
-    scores = np.empty(2 * max_shift + 1, dtype=np.float32)
-    for i, s in enumerate(range(-max_shift, max_shift + 1)):
-        if s >= 0:
-            a, b = c[s:], p[: n - s]
-        else:
-            a, b = c[:s], p[-s:]
-        denom = np.sqrt((a * a).sum() * (b * b).sum()) + 1e-6
-        scores[i] = (a * b).sum() / denom
-    best = int(np.argmax(scores))
-    if scores[best] < 0.25:
-        return None
-    # plain float, not np.float32: this value flows into telemetry (json) and
-    # the planner's safe-distance calc downstream.
-    return float(_subpixel_peak(scores, best) - max_shift)
 
 
 class Vision:
@@ -102,288 +54,71 @@ class Vision:
         for box in (cfg.own_car_box, cfg.top_hud_box):
             l, t, r, b = box
             ignore[int(t * h):int(b * h), int(l * w):int(r * w)] = 255
-        self.bev_ignore_u8 = cv2.warpPerspective(
-            ignore, self.M, (cfg.bev_w, cfg.bev_h))
-
-        self._ys = np.arange(cfg.bev_h, dtype=np.float32)
-        self._map_y = np.repeat(self._ys[:, None], cfg.bev_w, axis=1)
-
-        # Temporal state
-        self.edge_left_ab = None    # (slope, intercept) of left(y)
-        self.edge_right_ab = None
-        self.prev_row_profile = None
-        self.lane_phase = None
-        self.lane_width = cfg.lane_width_guess_px
-        self.own_x_ema = None
-        self.prev_own_x_raw = None
-        self.own_vx_ema = 0.0
-        self.dy_ema = 0.0
+        self.bev_ignore = cv2.warpPerspective(
+            ignore, self.M, (cfg.bev_w, cfg.bev_h)) > 0
+        self._cols = np.arange(cfg.bev_w)
 
     # ------------------------------------------------------------------
     def process(self, frame: np.ndarray, want_masks: bool = False) -> Perception:
         cfg = self.cfg
-        bev = cv2.warpPerspective(frame, self.M, (cfg.bev_w, cfg.bev_h))
+        W, H = cfg.bev_w, cfg.bev_h
+        bev = cv2.warpPerspective(frame, self.M, (W, H))
         hsv = cv2.cvtColor(bev, cv2.COLOR_BGR2HSV)
         s_, v_ = hsv[:, :, 1], hsv[:, :, 2]
-        gray_mask = ((s_ <= cfg.road_sat_max)
-                     & (v_ >= cfg.road_val_min) & (v_ <= cfg.road_val_max))
-        white_mask = (s_ <= cfg.white_sat_max) & (v_ >= cfg.white_val_min)
-        # Ignored regions (own car / HUD) count as road for edge fitting: the
-        # car sits dead-center and would otherwise punch a hole in the road.
-        roadish = gray_mask | white_mask | (self.bev_ignore_u8 > 0)
+        gray = ((s_ <= cfg.road_sat_max)
+                & (v_ >= cfg.road_val_min) & (v_ <= cfg.road_val_max))
+        white = (s_ <= cfg.white_sat_max) & (v_ >= cfg.white_val_min)
 
-        left_arr, right_arr, quality = self._fit_road_edges(roadish)
+        # --- road = largest connected gray/white region (car holes included) ---
+        roadish = (gray | white | self.bev_ignore).astype(np.uint8)
+        roadish = cv2.morphologyEx(roadish, cv2.MORPH_CLOSE,
+                                   np.ones((7, 7), np.uint8))
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(roadish)
+        road_region = np.zeros((H, W), dtype=bool)
+        quality = 0.0
+        if n > 1:
+            biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            road_cc = labels == biggest
+            any_row = road_cc.any(axis=1)
+            if any_row.any():
+                left = road_cc.argmax(axis=1)
+                right = W - 1 - road_cc[:, ::-1].argmax(axis=1)
+                road_region = ((self._cols[None, :] >= left[:, None])
+                               & (self._cols[None, :] <= right[:, None])
+                               & any_row[:, None])
+                quality = float(any_row.mean())
 
-        # --- rectify: road left..right -> full raster width, every row ---
-        span = (right_arr - left_arr)[:, None]
-        xs = (np.arange(cfg.bev_w, dtype=np.float32) + 0.5) / cfg.bev_w
-        map_x = left_arr[:, None] + xs[None, :] * span
-        rect = cv2.remap(bev, map_x.astype(np.float32), self._map_y,
-                         cv2.INTER_LINEAR)
-        rect_ignore = cv2.remap(self.bev_ignore_u8, map_x.astype(np.float32),
-                                self._map_y, cv2.INTER_NEAREST) > 0
+        # --- obstacles = colored blobs sitting inside the road ---
+        obstacle = road_region & ~gray & ~white & ~self.bev_ignore
+        ob = obstacle.astype(np.uint8) * 255
+        ob = cv2.morphologyEx(ob, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        ob = cv2.morphologyEx(ob, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
-        rhsv = cv2.cvtColor(rect, cv2.COLOR_BGR2HSV)
-        rs, rv = rhsv[:, :, 1], rhsv[:, :, 2]
-        rgray = ((rs <= cfg.road_sat_max)
-                 & (rv >= cfg.road_val_min) & (rv <= cfg.road_val_max))
-        rwhite = (rs <= cfg.white_sat_max) & (rv >= cfg.white_val_min)
-
-        # --- obstacles ---
-        obstacle = ~rgray & ~rwhite & ~rect_ignore
-        margin = int(cfg.bev_w * 0.03)  # edge-fit slop
-        obstacle[:, :margin] = False
-        obstacle[:, cfg.bev_w - margin:] = False
-        obstacle_u8 = obstacle.astype(np.uint8) * 255
-        obstacle_u8 = cv2.morphologyEx(
-            obstacle_u8, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        obstacle_u8 = cv2.morphologyEx(
-            obstacle_u8, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-
-        blobs = []
-        lane_w_est = self.lane_width if self.lane_width > 1 else cfg.lane_width_guess_px
-        n, _labels, stats, centroids = cv2.connectedComponentsWithStats(obstacle_u8)
-        for i in range(1, n):
-            x, y, bw, bh, area = stats[i]
-            if area < cfg.min_blob_area:
+        obstacles = []
+        n2, _l, stats2, cents = cv2.connectedComponentsWithStats(ob)
+        for i in range(1, n2):
+            x, y, bw, bh, area = stats2[i]
+            if area < cfg.min_blob_area or bw > 0.6 * W:
                 continue
-            cy_bottom = y + bh
-            # A single car spans about one lane. Anything much wider is HUD text
-            # or an own-car/edge artifact, not traffic; a wide band hugging the
-            # very bottom is the player car. Both produced a phantom "wall" that
-            # forced needless braking, so drop them.
-            if bw > 2.4 * lane_w_est:
-                continue
-            if cy_bottom >= cfg.bev_h - 4 and bw > 0.5 * cfg.bev_w:
-                continue
-            blobs.append((float(centroids[i][0]), float(cy_bottom),
-                          float(bw), float(bh), int(area)))
+            obstacles.append((float(cents[i][0]), float(y + bh),
+                              float(bw), float(bh), int(area)))
 
-        # --- lane model (vertical lines in rectified space) ---
-        col_profile = rwhite.sum(axis=0).astype(np.float32)
-        self._update_lane_model(col_profile)
-        lane_centers = self._lane_centers()
-
-        # --- own position within the road + lateral velocity ---
-        # own_x_raw is where screen-center falls between the road edges at the
-        # bottom row, remapped onto 0..bev_w. It moves as the car changes lanes.
-        bottom = cfg.bev_h - 1
-        l_b, r_b = left_arr[bottom], right_arr[bottom]
-        own_x_raw = (cfg.bev_w / 2.0 - l_b) / max(r_b - l_b, 1e-6) * cfg.bev_w
-        own_x_raw = float(np.clip(own_x_raw, 0.0, cfg.bev_w))
-        if self.own_x_ema is None:
-            self.own_x_ema = own_x_raw
-            self.prev_own_x_raw = own_x_raw
-        vx_inst = own_x_raw - self.prev_own_x_raw
-        self.prev_own_x_raw = own_x_raw
-        # Heavier smoothing: the raw edge fit jitters a few px per frame, which
-        # otherwise fabricates a lateral velocity the steering chases.
-        self.own_x_ema = 0.7 * self.own_x_ema + 0.3 * own_x_raw
-        self.own_vx_ema = 0.7 * self.own_vx_ema + 0.3 * vx_inst
-
-        # --- forward flow from dash phase ---
-        row_profile = rwhite.sum(axis=1).astype(np.float32)
-        dy = profile_shift(self.prev_row_profile, row_profile, cfg.max_forward_shift)
-        self.prev_row_profile = row_profile
-        if dy is not None and dy >= 0:
-            self.dy_ema = 0.7 * self.dy_ema + 0.3 * dy
+        # --- road bounds near the car (bottom rows) ---
+        near = road_region[int(H * 0.75):, :]
+        cols_any = near.any(axis=0)
+        if cols_any.any():
+            road_left = float(np.argmax(cols_any))
+            road_right = float(W - 1 - np.argmax(cols_any[::-1]))
         else:
-            # Decay toward zero when the flow is unreadable so a stale reading
-            # can't keep feeding the safe-distance calc a phantom high speed.
-            self.dy_ema *= 0.9
+            road_left, road_right = 0.0, float(W)
 
-        own_lane = self._lane_index(self.own_x_ema, lane_centers)
         masks = None
         if want_masks:
-            masks = {
-                "bev": rect,
-                "bev_raw": bev,
-                "gray": rgray.astype(np.uint8) * 255,
-                "white": rwhite.astype(np.uint8) * 255,
-                "obstacle": obstacle_u8,
-                "edges": (left_arr, right_arr),
-            }
-
-        return Perception(
-            blobs=blobs, road_left=0.0, road_right=float(cfg.bev_w),
-            lane_phase=self.lane_phase if self.lane_phase is not None else 0.0,
-            lane_width=self.lane_width, lane_centers=lane_centers,
-            own_x=self.own_x_ema, own_x_raw=own_x_raw,
-            own_vx=self.own_vx_ema, own_lane=own_lane,
-            dy=self.dy_ema, edge_quality=quality, masks=masks,
-        )
-
-    # ------------------------------------------------------------------
-    def _fit_road_edges(self, roadish: np.ndarray) -> tuple:
-        """Fit left(y), right(y) lines to the road edges, bottom-up per band."""
-        cfg = self.cfg
-        H, W = cfg.bev_h, cfg.bev_w
-        n_bands = 12
-        band_h = H // n_bands
-        pts_y, pts_l, pts_r, wts = [], [], [], []
-        center = W // 2
-        for b in range(n_bands - 1, -1, -1):  # bottom band first
-            y0, y1 = b * band_h, min((b + 1) * band_h, H)
-            frac = roadish[y0:y1, :].mean(axis=0)
-            is_r = frac >= 0.5
-            c = center
-            if not is_r[c]:
-                near = np.where(is_r)[0]
-                if len(near) == 0:
-                    continue
-                cand = near[np.argmin(np.abs(near - c))]
-                if abs(cand - c) > W * 0.25:
-                    continue
-                c = int(cand)
-            # walk out with gap tolerance (cars punch holes in the gray)
-            gap_tol = 12
-            left = c
-            i, gap = c, 0
-            while i > 0:
-                i -= 1
-                if is_r[i]:
-                    left, gap = i, 0
-                else:
-                    gap += 1
-                    if gap > gap_tol:
-                        break
-            right = c
-            i, gap = c, 0
-            while i < W - 1:
-                i += 1
-                if is_r[i]:
-                    right, gap = i, 0
-                else:
-                    gap += 1
-                    if gap > gap_tol:
-                        break
-            if right - left < W * 0.25:
-                continue
-            yc = (y0 + y1) / 2.0
-            pts_y.append(yc)
-            pts_l.append(float(left))
-            pts_r.append(float(right + 1))
-            wts.append(float(is_r[left:right].mean()))
-            center = (left + right) // 2
-
-        quality = len(pts_y) / n_bands
-        if len(pts_y) >= 3:
-            yv = np.array(pts_y)
-            wv = np.array(wts) + 1e-3
-            la = np.polyfit(yv, np.array(pts_l), 1, w=wv)
-            ra = np.polyfit(yv, np.array(pts_r), 1, w=wv)
-            a = 0.35  # temporal smoothing
-            if self.edge_left_ab is None:
-                self.edge_left_ab, self.edge_right_ab = la, ra
-            else:
-                self.edge_left_ab = (1 - a) * self.edge_left_ab + a * la
-                self.edge_right_ab = (1 - a) * self.edge_right_ab + a * ra
-
-        if self.edge_left_ab is None:
-            left_arr = np.zeros(H, np.float32)
-            right_arr = np.full(H, W, np.float32)
-        else:
-            left_arr = np.clip(np.polyval(self.edge_left_ab, self._ys),
-                               0, W * 0.45).astype(np.float32)
-            right_arr = np.clip(np.polyval(self.edge_right_ab, self._ys),
-                                W * 0.55, W).astype(np.float32)
-        return left_arr, right_arr, quality
-
-    # ------------------------------------------------------------------
-    def _update_lane_model(self, col_profile: np.ndarray) -> None:
-        min_w, max_w = self.cfg.min_lane_width_px, self.cfg.max_lane_width_px
-        # Require boundaries to be at least ~min lane apart, so thick/aliased
-        # lines and dash texture cannot spawn a crowd of false peaks.
-        peaks = self._find_peaks(col_profile, min_w * 0.6)
-        if len(peaks) >= 2:
-            gaps = np.diff(peaks)
-            good = gaps[(gaps >= min_w) & (gaps <= max_w)]  # absolute sane range
-            if len(good) > 0:
-                self.lane_width = 0.9 * self.lane_width + 0.1 * float(np.median(good))
-        self.lane_width = float(np.clip(self.lane_width, min_w, max_w))  # hard clamp
-        if len(peaks) >= 1:
-            ref = float(peaks[np.argmin(np.abs(peaks - self.cfg.bev_w / 2))])
-            new_phase = ref % self.lane_width
-            if self.lane_phase is None:
-                self.lane_phase = new_phase
-            else:
-                diff = (new_phase - self.lane_phase + self.lane_width / 2) \
-                    % self.lane_width - self.lane_width / 2
-                self.lane_phase = (self.lane_phase + 0.25 * diff) % self.lane_width
-        elif self.lane_phase is None:
-            self.lane_phase = 0.0
-
-    @staticmethod
-    def _find_peaks(prof: np.ndarray, min_sep: float = 1.0) -> np.ndarray:
-        if prof.max() <= 0:
-            return np.array([])
-        thresh = max(prof.max() * 0.35, 3.0)
-        above = prof >= thresh
-        raw = []
-        i, n = 0, len(prof)
-        while i < n:
-            if above[i]:
-                j = i
-                while j < n and above[j]:
-                    j += 1
-                raw.append(i + int(np.argmax(prof[i:j])))
-                i = j
-            else:
-                i += 1
-        if not raw:
-            return np.array([])
-        # Keep the tallest peaks first and drop any that fall within min_sep of a
-        # stronger one, so close double-detections collapse to a single boundary.
-        kept = []
-        for p in sorted(raw, key=lambda q: -prof[q]):
-            if all(abs(p - k) >= min_sep for k in kept):
-                kept.append(p)
-        return np.array(sorted(kept))
-
-    def _lane_centers(self) -> list:
-        """Lane centers across the full rectified width via the boundary model."""
-        W = self.cfg.bev_w
-        w = self.lane_width
-        phase = self.lane_phase if self.lane_phase is not None else 0.0
-        k0 = int(np.floor((0 - phase) / w))
-        centers = []
-        b = phase + k0 * w
-        while b < W + w:
-            c = b + w / 2
-            if -0.25 * w <= c - w / 2 and c + w / 2 <= W + 0.25 * w:
-                centers.append(float(c))
-            b += w
-        if not centers:
-            n_lanes = max(1, round(W / w))
-            lane_w = W / n_lanes
-            centers = [(i + 0.5) * lane_w for i in range(int(n_lanes))]
-        return centers
-
-    @staticmethod
-    def _lane_index(x: float, lane_centers: list) -> int:
-        if not lane_centers:
-            return 0
-        return int(np.argmin([abs(x - c) for c in lane_centers]))
+            masks = {"bev": bev, "obstacle": ob,
+                     "road": road_region.astype(np.uint8) * 255}
+        return Perception(obstacles=obstacles, road_left=road_left,
+                          road_right=road_right, car_x=W / 2.0,
+                          road_quality=quality, masks=masks)
 
     # ------------------------------------------------------------------
     def draw_debug(self, frame: np.ndarray, per: Perception, plan=None) -> tuple:
@@ -397,28 +132,20 @@ class Vision:
             cv2.rectangle(vis, (int(l * w), int(t * h)), (int(r * w), int(b * h)),
                           color, 1)
 
-        bev_vis = per.masks["bev"].copy() if per.masks else np.zeros(
+        bev = per.masks["bev"].copy() if per.masks else np.zeros(
             (self.cfg.bev_h, self.cfg.bev_w, 3), np.uint8)
-        for c in per.lane_centers:
-            cv2.line(bev_vis, (int(c), 0), (int(c), self.cfg.bev_h), (80, 80, 80), 1)
-        for (cx, cyb, bw, bh, _area) in per.blobs:
-            cv2.rectangle(bev_vis, (int(cx - bw / 2), int(cyb - bh)),
-                          (int(cx + bw / 2), int(cyb)), (0, 0, 255), 1)
-        cv2.circle(bev_vis, (int(per.own_x), self.cfg.bev_h - 4), 5, (0, 255, 0), -1)
-        cv2.putText(bev_vis, f"vx={per.own_vx:+.1f} dy={per.dy:.1f} "
-                    f"q={per.edge_quality:.1f}",
-                    (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.line(bev, (int(per.road_left), 0), (int(per.road_left), self.cfg.bev_h),
+                 (0, 128, 255), 1)
+        cv2.line(bev, (int(per.road_right), 0), (int(per.road_right), self.cfg.bev_h),
+                 (0, 128, 255), 1)
+        for (cx, cyb, bw, bh, _a) in per.obstacles:
+            cv2.rectangle(bev, (int(cx - bw / 2), int(cyb - bh)),
+                          (int(cx + bw / 2), int(cyb)), (0, 0, 255), 2)
+        cv2.circle(bev, (int(per.car_x), self.cfg.bev_h - 4), 5, (0, 255, 0), -1)
         if plan is not None:
-            cv2.putText(bev_vis, f"{plan.state} ln{per.own_lane}->{plan.target_lane}",
-                        (4, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            cv2.putText(bev, f"{plan.state} steer={plan.steer_key or '-'}",
+                        (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             if plan.target_x is not None:
-                cv2.line(bev_vis, (int(plan.target_x), self.cfg.bev_h - 20),
-                         (int(plan.target_x), self.cfg.bev_h), (0, 255, 255), 2)
-        if per.masks and "edges" in per.masks:
-            la, ra = per.masks["edges"]
-            raw = per.masks["bev_raw"].copy()
-            for y in range(0, self.cfg.bev_h, 4):
-                cv2.circle(raw, (int(la[y]), y), 1, (0, 255, 255), -1)
-                cv2.circle(raw, (int(ra[y]), y), 1, (0, 255, 255), -1)
-            per.masks["bev_raw_edges"] = raw
-        return vis, bev_vis
+                cv2.line(bev, (int(plan.target_x), self.cfg.bev_h - 24),
+                         (int(plan.target_x), self.cfg.bev_h), (0, 255, 0), 2)
+        return vis, bev

@@ -67,26 +67,25 @@ def main() -> None:
 
     per = None
     tracks = []
+    plan = None
     for i in range(12):
-        # car_y_frac 0.30..0.47: ahead of us, closing, clear of the ignore box
-        frame = make_frame(dash_phase=i * 0.35, car_y_frac=0.30 + i * 0.015)
+        # a car dead ahead in the center lane, closing on us
+        frame = make_frame(dash_phase=i * 0.35, car_y_frac=0.30 + i * 0.03)
         per = vision.process(frame, want_masks=True)
-        tracks = tracker.update(per.blobs)
+        tracks = tracker.update(per.obstacles)
         plan = planner.plan(per, tracks, fps=30.0)
 
-    assert per.edge_quality > 0.5, f"road edges poorly fit: q={per.edge_quality}"
-    assert 3 <= len(per.lane_centers) <= 7, f"lane count off: {per.lane_centers}"
-    assert len(per.blobs) >= 1, "car ahead not detected as obstacle"
+    assert per.road_quality > 0.5, f"road poorly detected: q={per.road_quality}"
+    assert per.road_right - per.road_left > 0.5 * cfg.bev_w, \
+        f"road span too narrow: {per.road_left:.0f}..{per.road_right:.0f}"
+    assert abs(per.car_x - cfg.bev_w / 2) < 1, "car_x should be fixed at center"
+    assert len(per.obstacles) >= 1, "car ahead not detected as obstacle"
     assert len(tracks) >= 1, "tracker lost the car"
-    assert per.dy > 0.2, f"forward flow not positive: {per.dy}"
-    # camera is centered in this synthetic scene, so own_x should sit mid-road
-    assert 0.30 * cfg.bev_w < per.own_x < 0.70 * cfg.bev_w, \
-        f"own_x should be near road center, got {per.own_x:.0f}"
-    tr = max(tracks, key=lambda t: t.age)
-    assert tr.vy > 0, f"closing car should have vy>0, got {tr.vy:.2f}"
+    # a car in our column should make the planner steer or brake, not cruise on
     assert plan.state in ("CRUISE", "CHANGE", "BRAKE_WAIT")
-    assert plan.clear_dists[per.own_lane] < float("inf"), \
-        "car ahead should bound our lane's clear distance"
+    assert plan.n_threats >= 1, "car ahead should register as a threat"
+    assert plan.state == "CHANGE" and plan.steer_key is not None, \
+        f"should dodge a car dead ahead, got {plan.state}/{plan.steer_key}"
 
     # UI navigator: menu on a gray-road background (like the real game), with a
     # top grass strip that the cy filter must reject, and a centered green Play.
@@ -114,10 +113,9 @@ def main() -> None:
     assert xy[0] > 0.5 * W, "must click the ORANGE Menu button, not green Revive"
 
     print("SMOKE TEST PASSED")
-    print(f"  edge_q: {per.edge_quality:.2f}  own_x: {per.own_x:.0f}/{cfg.bev_w}  "
-          f"lanes: {[round(c) for c in per.lane_centers]}")
-    print(f"  blobs: {len(per.blobs)}  tracked vy: {tr.vy:+.2f} px/f  dy: {per.dy:.2f}")
-    print(f"  plan: {plan.state} clear={['%.0f' % c if c != float('inf') else 'inf' for c in plan.clear_dists]}")
+    print(f"  road_q: {per.road_quality:.2f}  road: {per.road_left:.0f}..{per.road_right:.0f}"
+          f"  obstacles: {len(per.obstacles)}  tracks: {len(tracks)}")
+    print(f"  plan: {plan.state}  steer={plan.steer_key}  threats={plan.n_threats}")
 
 
 if __name__ == "__main__":

@@ -33,19 +33,15 @@ class Telemetry:
             "auto": bool(autopilot),
             "state": plan.state if plan else None,
             "keys": keys,
-            "own_lane": int(per.own_lane),
-            "own_x": round(float(per.own_x), 1),
-            "own_vx": round(float(per.own_vx), 2),
-            "dy": round(float(per.dy), 2),
-            "edge_q": round(float(per.edge_quality), 2),
-            "lanes": [round(float(c), 1) for c in per.lane_centers],
-            "clear": [None if c == float("inf") else round(float(c), 1)
-                      for c in (plan.clear_dists if plan else [])],
-            "ttc": [None if x == float("inf") else round(float(x), 2)
-                    for x in (plan.ttc if plan else [])],
-            "danger": round(float(plan.danger_dist), 1) if plan else None,
-            "target_lane": int(plan.target_lane) if plan else None,
-            "n_blobs": int(len(per.blobs)),
+            "steer": plan.steer_key if plan else None,
+            "gas": bool(plan.gas) if plan else None,
+            "brake": bool(plan.brake) if plan else None,
+            "n_threats": int(plan.n_threats) if plan else 0,
+            "car_x": round(float(per.car_x), 1),
+            "road": [round(float(per.road_left), 1), round(float(per.road_right), 1)],
+            "road_q": round(float(per.road_quality), 2),
+            "obstacles": [[round(float(o[0]), 1), round(float(o[1]), 1),
+                           round(float(o[2]), 1)] for o in per.obstacles],
         }
         self._f.write(json.dumps(rec) + "\n")
 
@@ -81,16 +77,11 @@ class Recorder:
             "t": round(time.perf_counter(), 3),
             "fps": round(float(fps), 1),
             "keys": {k: bool(v) for k, v in keys.items()},
-            "own_lane": int(per.own_lane),
-            "own_x": round(float(per.own_x), 1),
-            "own_x_raw": round(float(per.own_x_raw), 1),
-            "own_vx": round(float(per.own_vx), 2),
-            "dy": round(float(per.dy), 2),
-            "edge_q": round(float(per.edge_quality), 2),
-            "lanes": [round(float(c), 1) for c in per.lane_centers],
-            # obstacles in rectified road space: nearest edge, center x, width
-            "blobs": [[round(float(b[0]), 1), round(float(b[1]), 1), round(float(b[2]), 1)]
-                      for b in per.blobs],
+            "car_x": round(float(per.car_x), 1),
+            "road": [round(float(per.road_left), 1), round(float(per.road_right), 1)],
+            # obstacles in fixed BEV: center x, nearest edge y, width
+            "obstacles": [[round(float(o[0]), 1), round(float(o[1]), 1),
+                           round(float(o[2]), 1)] for o in per.obstacles],
         }
         self._f.write(json.dumps(rec) + "\n")
         self.n += 1

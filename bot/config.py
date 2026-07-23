@@ -25,7 +25,9 @@ class Config:
     # trapezoid must contain the road at every lateral offset. Grass that
     # sneaks in is rejected later by the road-span detector.
     trap_bottom_y: float = 0.97
-    trap_top_y: float = 0.30
+    # Reach further toward the horizon so traffic is seen well before impact.
+    # Grass pulled in at the corners is rejected by the road-region detector.
+    trap_top_y: float = 0.18
     trap_bottom_left_x: float = 0.05
     trap_bottom_right_x: float = 0.95
     trap_top_left_x: float = 0.30
@@ -80,8 +82,12 @@ class Config:
     # dashed-line forward flow (that aliases and reads ~0). A very close obstacle
     # is a threat regardless of measured closing speed.
     min_closing_px_s: float = 25.0    # obstacle must close faster than this to time it
-    react_dist_px: float = 130.0      # any obstacle nearer than this = act now
-    ttc_danger_s: float = 1.10        # car this soon in our lane -> plan a move
+    react_dist_px: float = 220.0      # obstacle nearer than this (in our column) = act
+    ttc_danger_s: float = 1.10        # car this soon in our column -> act
+    # gap-dodge geometry (fixed BEV px; car at bev_w/2)
+    path_half_px: float = 24.0        # half-width of our column that must stay clear
+    dodge_shift_px: float = 42.0      # sideways offset we aim for when dodging
+    road_edge_margin_px: float = 18.0  # keep this far inside the road edge
     ttc_brake_s: float = 0.45         # nothing reachable safer than this -> brake
     ttc_change_margin_s: float = 0.30  # a target lane must beat current by this much
     side_margin_ahead: float = 55.0   # a car this close beside us blocks a change
