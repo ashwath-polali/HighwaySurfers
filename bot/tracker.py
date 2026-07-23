@@ -34,14 +34,16 @@ class Tracker:
         """blobs: [(cx, cy_bottom, w, h, area), ...] -> live tracks (age-gated)."""
         cfg = self.cfg
         unmatched = list(range(len(blobs)))
-        # Greedy: closest (track, blob) pairs first.
+        # Greedy: closest (track, blob) pairs first, under an anisotropic gate
+        # (tight across lanes, wide along the travel direction).
         pairs = []
         for ti, tr in enumerate(self.tracks):
             px, py = tr.predict(1.0)
             for bi in range(len(blobs)):
                 bx, by = blobs[bi][0], blobs[bi][1]
-                d = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
-                if d <= cfg.track_match_dist:
+                d = ((px - bx) / cfg.track_match_x) ** 2 \
+                    + ((py - by) / cfg.track_match_y) ** 2
+                if d <= 1.0:
                     pairs.append((d, ti, bi))
         pairs.sort()
         used_t, used_b = set(), set()
@@ -80,4 +82,8 @@ class Tracker:
             self.tracks.append(Track(self._next_id, bx, by, bw, bh))
             self._next_id += 1
 
-        return [t for t in self.tracks if t.age >= cfg.track_min_age or t.missed == 0]
+        # Only surface tracks confirmed across a few frames. The previous
+        # `or t.missed == 0` clause let brand-new (age 1) tracks through and
+        # made the age gate a no-op, so single-frame color noise could spawn a
+        # phantom obstacle and trigger a swerve.
+        return [t for t in self.tracks if t.age >= cfg.track_min_age]

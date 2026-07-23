@@ -31,8 +31,9 @@ class Telemetry:
             "keys": keys,
             "own_lane": per.own_lane,
             "own_x": round(per.own_x, 1),
-            "dx": round(per.dx, 2),
+            "own_vx": round(per.own_vx, 2),
             "dy": round(per.dy, 2),
+            "edge_q": round(per.edge_quality, 2),
             "lanes": [round(c, 1) for c in per.lane_centers],
             "clear": [None if c == float("inf") else round(c, 1)
                       for c in (plan.clear_dists if plan else [])],

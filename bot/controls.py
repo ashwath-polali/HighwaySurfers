@@ -1,10 +1,10 @@
 """Key injection + global hotkeys.
 
-Keys go out via pydirectinput (scancode SendInput — Roblox accepts these).
+Keys go out via pydirectinput (scancode SendInput, which the game accepts).
 Everything is non-blocking: the planner asks for key states / timed taps and
 `Controls.update()` is pumped every frame to release expired taps.
 
-Global hotkeys (work even while Roblox has focus, via low-level hook):
+Global hotkeys (work even while the game has focus, via low-level hook):
   F8  toggle autopilot on/off
   F9  PANIC: release all keys and quit
 """

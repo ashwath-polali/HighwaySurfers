@@ -72,10 +72,13 @@ class Planner:
         # --- state machine ---
         self.frames_in_state += 1
         if self.state == "CHANGE":
-            done = (self.target_lane is not None
-                    and abs(per.own_x - lanes[self.target_lane]) < cfg.steer_tol_px * 1.5)
-            aborted = self.target_lane is None or self.target_lane >= n_lanes
-            if done or aborted or self.frames_in_state > int(3.0 * fps):
+            # Bounds-check the target BEFORE indexing: the lane count can shrink
+            # between frames (edges momentarily lost), which would otherwise
+            # index out of range here.
+            tl = self.target_lane
+            valid = tl is not None and 0 <= tl < n_lanes
+            done = valid and abs(per.own_x - lanes[tl]) < cfg.steer_tol_px * 1.5
+            if done or not valid or self.frames_in_state > int(3.0 * fps):
                 self._to("CRUISE")
                 self.target_lane = None
 
@@ -165,17 +168,17 @@ class Planner:
 
     # ------------------------------------------------------------------
     def _steer(self, per, target_x: float, fps: float) -> Optional[str]:
-        """Predictive bang-bang: hold toward target, release early by coast distance.
+        """Predictive bang-bang: hold toward the target, release early by the
+        distance the car will still drift (coast) after the key comes up.
 
-        own lateral velocity = -dx (world shifts opposite to the car).
+        own_x and own_vx are both measured directly in rectified road space, so
+        the sign is straightforward: press RIGHT to raise own_x, LEFT to lower it.
         """
         cfg = self.cfg
-        err = target_x - per.own_x           # + = need to move right
-        v_own = -per.dx * fps                # px/s, + = moving right
+        err = target_x - per.own_x                 # + = need to move right
+        v_own = per.own_vx * fps                   # px/s, + = drifting right
         coast = v_own * self.cal["steer_coast_s"]  # px we'll drift after release
-        # where we'd end up if we released right now
-        settle = coast
-        remaining = err - settle
+        remaining = err - coast                    # error left once coasting settles
         if abs(err) < cfg.steer_tol_px and abs(v_own) < 40:
             return None
         if remaining > cfg.steer_tol_px * 0.6:

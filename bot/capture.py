@@ -1,9 +1,9 @@
-"""Screen capture of the Roblox client area.
+"""Screen capture of the game client area.
 
 Primary backend: dxcam (DXGI desktop duplication, fast, Windows only).
 Fallback: mss (slower but always works).
 
-The Roblox window is located by title via pygetwindow and the *client area*
+The game window is located by title via pygetwindow and the *client area*
 (no title bar / borders) is computed with Win32 calls so HUD fractions in
 config line up with what the game actually renders.
 """
@@ -25,16 +25,25 @@ def _make_dpi_aware() -> None:
             pass
 
 
-def find_roblox_client_region(window_title: str) -> tuple:
-    """Returns (left, top, right, bottom) of the window's client area in screen px."""
+def _find_window(window_title: str):
+    """Pick the best matching window. getWindowsWithTitle is a case-insensitive
+    substring match, so several windows (a browser tab, a chat) can match — take
+    the largest visible one, which is the actual game client."""
     import pygetwindow as gw
 
     wins = [w for w in gw.getWindowsWithTitle(window_title) if w.title.strip()]
+    wins = [w for w in wins if w.visible and w.width > 200 and w.height > 200]
     if not wins:
         raise RuntimeError(
-            f"No window with title containing '{window_title}' found. Is the game running?"
+            f"No usable window with title containing '{window_title}' found. "
+            "Is the game running and un-minimized?"
         )
-    win = wins[0]
+    return max(wins, key=lambda w: w.width * w.height)
+
+
+def find_game_client_region(window_title: str) -> tuple:
+    """Returns (left, top, right, bottom) of the window's client area in screen px."""
+    win = _find_window(window_title)
     hwnd = win._hWnd
 
     rect = wintypes.RECT()
@@ -48,24 +57,20 @@ def find_roblox_client_region(window_title: str) -> tuple:
     right, bottom = left + rect.right, top + rect.bottom
     if rect.right < 200 or rect.bottom < 200:
         raise RuntimeError(
-            f"Roblox client area looks too small ({rect.right}x{rect.bottom}). "
+            f"game client area looks too small ({rect.right}x{rect.bottom}). "
             "Is the window minimized?"
         )
     return (left, top, right, bottom)
 
 
-def activate_roblox(window_title: str) -> None:
+def activate_game(window_title: str) -> None:
     """Bring the game to the foreground so injected keys reach it."""
-    import pygetwindow as gw
-
-    wins = [w for w in gw.getWindowsWithTitle(window_title) if w.title.strip()]
-    if wins:
-        try:
-            wins[0].activate()
-        except Exception:
-            # pygetwindow raises spuriously on Win11 sometimes; a click from the
-            # user achieves the same thing.
-            pass
+    try:
+        _find_window(window_title).activate()
+    except Exception:
+        # pygetwindow raises spuriously on Win11 sometimes; a click from the
+        # user achieves the same thing.
+        pass
 
 
 class Capture:
@@ -97,7 +102,9 @@ class Capture:
             print(f"[capture] dxcam @ {self.target_fps}fps region={self.region}")
             return
         except Exception as e:  # noqa: BLE001 - any dxcam failure falls back to mss
-            print(f"[capture] dxcam unavailable ({e}); falling back to mss")
+            print(f"[capture] dxcam unavailable ({e}); falling back to mss. "
+                  "(dxcam only captures the primary monitor — if the game is on "
+                  "a second screen, move it to the primary one for the fast path.)")
             self._camera = None
 
         import mss
@@ -136,5 +143,5 @@ class Capture:
 
 def open_capture(cfg) -> Capture:
     _make_dpi_aware()
-    region = find_roblox_client_region(cfg.window_title)
+    region = find_game_client_region(cfg.window_title)
     return Capture(region, cfg.target_fps)

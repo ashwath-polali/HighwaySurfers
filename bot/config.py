@@ -8,10 +8,15 @@ from dataclasses import dataclass, field
 import json
 import os
 
+# Project root = the folder holding this package, so calibration + telemetry
+# land in the same place no matter which directory the bot is launched from.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 @dataclass
 class Config:
     # ---- capture ----
+    # OS window title to capture; must match the player window's title exactly.
     window_title: str = "Roblox"
     target_fps: int = 60
 
@@ -52,7 +57,11 @@ class Config:
     max_forward_shift: int = 80      # px/frame search window for forward flow
 
     # ---- tracking ----
-    track_match_dist: float = 34.0   # px gate for association
+    # Anisotropic gate: cars barely move across lanes frame-to-frame but close
+    # FAST along y (BEV perspective magnifies distant motion). A circular gate
+    # drops fast closers and their velocity never gets estimated.
+    track_match_x: float = 26.0      # px gate across lanes
+    track_match_y: float = 110.0     # px gate along travel direction
     track_max_missed: int = 5
     track_min_age: int = 2
     vel_ema_alpha: float = 0.45
@@ -70,19 +79,18 @@ class Config:
 
     # ---- steering controller ----
     steer_tol_px: float = 5.0        # deadband around target
-    steer_kp: float = 1.0
     brake_tap_ms: int = 140
 
     # ---- default calibration (overridden by calibration.json) ----
     latency_ms_default: float = 180.0
-    steer_vmax_px_s_default: float = 260.0   # max lateral speed while key held
+    steer_vmax_px_s_default: float = 130.0   # lateral speed while key held (rectified px/s)
     steer_coast_s_default: float = 0.12      # coast distance = v * this after release
 
     # ---- telemetry ----
-    runs_dir: str = "runs"
+    runs_dir: str = os.path.join(_ROOT, "runs")
     debug_frame_every: int = 0       # 0 = off; N = dump annotated frame every N frames
 
-    calibration_path: str = "calibration.json"
+    calibration_path: str = os.path.join(_ROOT, "calibration.json")
 
 
 def load_calibration(cfg: Config) -> dict:

@@ -12,11 +12,11 @@ import time
 import cv2
 
 from .config import Config, load_calibration
-from .capture import open_capture, activate_roblox
+from .capture import open_capture, activate_game
 from .vision import Vision
 from .tracker import Tracker
 from .planner import Planner
-from .controls import Controls, Hotkeys, GAS, BRAKE
+from .controls import Controls, Hotkeys, GAS, BRAKE, LEFT, RIGHT
 from .telemetry import Telemetry
 
 
@@ -28,6 +28,21 @@ def _first_frame(capture):
     raise RuntimeError("no frames from capture")
 
 
+def _place_debug_windows(names, region) -> None:
+    """Park debug windows OUTSIDE the capture region. Both capture backends grab
+    a rectangle of the desktop, so a window sitting over the game would be warped
+    back into perception — a silent feedback loop. Move them to the right of the
+    region (or below if there's no room) and warn if they might still overlap."""
+    l, t, r, b = region
+    x = r + 8          # just right of the captured area
+    y = t
+    for i, name in enumerate(names):
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.moveWindow(name, x, y + i * 300)
+    print(f"[debug] windows parked at x>={x}. Keep them off the game window — "
+          "if one overlaps the captured area it will corrupt perception.")
+
+
 def mode_view(cfg, save_one: bool = False) -> None:
     capture = open_capture(cfg)
     frame = _first_frame(capture)
@@ -35,6 +50,8 @@ def mode_view(cfg, save_one: bool = False) -> None:
     tracker = Tracker(cfg)
     planner = Planner(cfg, load_calibration(cfg))
     print("[view] q in the overlay window quits. No keys are sent to the game.")
+    if not save_one:
+        _place_debug_windows(["frame", "bev"], capture.region)
     fps, prev_t = 0.0, None
     try:
         while True:
@@ -71,7 +88,7 @@ def mode_probe(cfg) -> None:
     capture = open_capture(cfg)
     frame = _first_frame(capture)
     vision = Vision(cfg, frame.shape)
-    activate_roblox(cfg.window_title)
+    activate_game(cfg.window_title)
     try:
         run_probe(cfg, capture, vision)
     finally:
@@ -83,7 +100,7 @@ def mode_calibrate(cfg) -> None:
     capture = open_capture(cfg)
     frame = _first_frame(capture)
     vision = Vision(cfg, frame.shape)
-    activate_roblox(cfg.window_title)
+    activate_game(cfg.window_title)
     try:
         run_steer_calibration(cfg, capture, vision, load_calibration(cfg))
     finally:
@@ -113,7 +130,9 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
               "Run `python run.py probe` for real numbers.")
     print(f"[drive] autopilot starts {'ON' if autostart else 'OFF'}. "
           "F8 = autopilot on/off, F9 = panic quit.")
-    activate_roblox(cfg.window_title)
+    activate_game(cfg.window_title)
+    if overlay:
+        _place_debug_windows(["bot"], capture.region)
 
     fps, prev_t = 0.0, None
     last_brake_t = 0.0
@@ -145,7 +164,6 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                 else:
                     controls.set_key(GAS, plan.gas)
                 # steering: exactly one of L/R/none
-                from .controls import LEFT, RIGHT
                 if plan.steer_key == LEFT:
                     controls.set_key(RIGHT, False)
                     controls.set_key(LEFT, True)
@@ -179,7 +197,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Roblox highway autopilot")
+    parser = argparse.ArgumentParser(description="highway driving autopilot")
     parser.add_argument("mode", choices=["view", "shot", "probe", "calibrate", "drive"])
     parser.add_argument("--overlay", action="store_true",
                         help="drive mode: show live BEV window + dump debug frames")

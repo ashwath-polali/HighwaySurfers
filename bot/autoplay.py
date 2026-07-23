@@ -17,8 +17,11 @@ import cv2
 import numpy as np
 
 
-# HSV (OpenCV ranges: H 0..179)
-GREEN_LO, GREEN_HI = (40, 110, 120), (85, 255, 255)
+# HSV (OpenCV ranges: H 0..179). The green floor is deliberately high in
+# saturation and value: UI buttons are vivid green, roadside grass is duller,
+# so this keeps grass out. The white-text check below is the real discriminator
+# regardless — grass carries no label text.
+GREEN_LO, GREEN_HI = (40, 150, 150), (85, 255, 255)
 ORANGE_LO, ORANGE_HI = (8, 140, 140), (28, 255, 255)
 WHITE_S_MAX, WHITE_V_MIN = 70, 200
 
