@@ -133,6 +133,10 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     activate_game(cfg.window_title)
     if overlay:
         _place_debug_windows(["bot"], capture.region)
+    # Grace period so the game settles into the foreground before keys start.
+    for i in (3, 2, 1):
+        print(f"[drive] taking control in {i}...")
+        time.sleep(1.0)
 
     fps, prev_t = 0.0, None
     last_brake_t = 0.0
