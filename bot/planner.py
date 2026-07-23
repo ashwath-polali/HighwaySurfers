@@ -183,10 +183,10 @@ class Planner:
     def _steer(self, per, target_x: float, fps: float) -> Optional[str]:
         """Hold A/D toward the target, release early by the coast distance.
 
-        own_x/own_vx are in rectified road space: press RIGHT to raise own_x,
-        LEFT to lower it. Releasing while still `lead` px short lets the car's
-        lateral momentum carry it the rest of the way (that is how a real swing
-        finishes), which prevents the overshoot-and-oscillate failure.
+        Sign measured from real play (records): pressing D/RIGHT LOWERS own_x and
+        A/LEFT RAISES it (the chase cam makes the rectified road move opposite to
+        the car). So to raise own_x we press LEFT, to lower it we press RIGHT.
+        Releasing while still `lead` px short lets momentum finish the swing.
         """
         cfg = self.cfg
         self.frame_i += 1
@@ -206,7 +206,8 @@ class Planner:
         if abs(remaining) < thresh:
             self._steer_dir = None
             return None
-        want = RIGHT if remaining > 0 else LEFT
+        # remaining > 0 means own_x must RISE, and raising own_x needs LEFT (a).
+        want = LEFT if remaining > 0 else RIGHT
         # Don't snap straight into the opposite direction: coast a few frames
         # first. Under input lag, instant reversals turn into flip-flop chatter.
         if (self._steer_dir is not None and want != self._steer_dir
