@@ -311,12 +311,16 @@ class Vision:
 
     # ------------------------------------------------------------------
     def _update_lane_model(self, col_profile: np.ndarray) -> None:
-        peaks = self._find_peaks(col_profile)
+        min_w, max_w = self.cfg.min_lane_width_px, self.cfg.max_lane_width_px
+        # Require boundaries to be at least ~min lane apart, so thick/aliased
+        # lines and dash texture cannot spawn a crowd of false peaks.
+        peaks = self._find_peaks(col_profile, min_w * 0.6)
         if len(peaks) >= 2:
             gaps = np.diff(peaks)
-            good = gaps[(gaps > self.lane_width * 0.6) & (gaps < self.lane_width * 1.6)]
+            good = gaps[(gaps >= min_w) & (gaps <= max_w)]  # absolute sane range
             if len(good) > 0:
-                self.lane_width = 0.85 * self.lane_width + 0.15 * float(np.median(good))
+                self.lane_width = 0.9 * self.lane_width + 0.1 * float(np.median(good))
+        self.lane_width = float(np.clip(self.lane_width, min_w, max_w))  # hard clamp
         if len(peaks) >= 1:
             ref = float(peaks[np.argmin(np.abs(peaks - self.cfg.bev_w / 2))])
             new_phase = ref % self.lane_width
@@ -330,23 +334,31 @@ class Vision:
             self.lane_phase = 0.0
 
     @staticmethod
-    def _find_peaks(prof: np.ndarray) -> np.ndarray:
+    def _find_peaks(prof: np.ndarray, min_sep: float = 1.0) -> np.ndarray:
         if prof.max() <= 0:
             return np.array([])
         thresh = max(prof.max() * 0.35, 3.0)
         above = prof >= thresh
-        peaks = []
+        raw = []
         i, n = 0, len(prof)
         while i < n:
             if above[i]:
                 j = i
                 while j < n and above[j]:
                     j += 1
-                peaks.append(i + int(np.argmax(prof[i:j])))
+                raw.append(i + int(np.argmax(prof[i:j])))
                 i = j
             else:
                 i += 1
-        return np.array(peaks)
+        if not raw:
+            return np.array([])
+        # Keep the tallest peaks first and drop any that fall within min_sep of a
+        # stronger one, so close double-detections collapse to a single boundary.
+        kept = []
+        for p in sorted(raw, key=lambda q: -prof[q]):
+            if all(abs(p - k) >= min_sep for k in kept):
+                kept.append(p)
+        return np.array(sorted(kept))
 
     def _lane_centers(self) -> list:
         """Lane centers across the full rectified width via the boundary model."""

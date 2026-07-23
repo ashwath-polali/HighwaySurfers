@@ -53,6 +53,11 @@ class Config:
     road_span_row_frac: float = 0.30  # bottom fraction of BEV rows used to find road span
     road_span_gray_frac: float = 0.55  # column is "road" if >= this frac of sampled rows is gray
     lane_width_guess_px: float = 44.0  # BEV px; refined online
+    # Hard bounds on lane width so the estimate can't run away. Without them the
+    # width EMA collapsed toward tiny gaps (thick/aliased lines read as many
+    # peaks), yielding 20-32 phantom lanes and a garbage lane model.
+    min_lane_width_px: float = 34.0
+    max_lane_width_px: float = 64.0
     max_lateral_shift: int = 24      # px/frame search window for lateral flow
     max_forward_shift: int = 80      # px/frame search window for forward flow
 
