@@ -81,13 +81,13 @@ class Config:
     # Collision timing comes from each obstacle's tracked closing speed, not the
     # dashed-line forward flow (that aliases and reads ~0). A very close obstacle
     # is a threat regardless of measured closing speed.
-    min_closing_px_s: float = 25.0    # obstacle must close faster than this to time it
-    react_dist_px: float = 220.0      # obstacle nearer than this (in our column) = act
-    ttc_danger_s: float = 1.10        # car this soon in our column -> act
-    # gap-dodge geometry (fixed BEV px; car at bev_w/2)
-    path_half_px: float = 24.0        # half-width of our column that must stay clear
+    # gap-dodge geometry (fixed BEV px; car at bev_w/2, bev_h=360)
+    path_half_px: float = 26.0        # half-width of our column that must stay clear
     dodge_shift_px: float = 42.0      # sideways offset we aim for when dodging
-    road_edge_margin_px: float = 18.0  # keep this far inside the road edge
+    road_edge_margin_px: float = 16.0  # keep this far inside the road edge
+    safe_ahead_px: float = 300.0      # column clear beyond this = fine to cruise
+    brake_ahead_px: float = 85.0      # best column worse than this = brake
+    dodge_gain: float = 1.25          # a side must be this much clearer to switch to it
     ttc_brake_s: float = 0.45         # nothing reachable safer than this -> brake
     ttc_change_margin_s: float = 0.30  # a target lane must beat current by this much
     side_margin_ahead: float = 55.0   # a car this close beside us blocks a change
