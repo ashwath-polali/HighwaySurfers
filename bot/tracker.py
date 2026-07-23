@@ -1,7 +1,7 @@
 """Constant-velocity blob tracker in BEV space.
 
 Traffic in this game is lane-locked and near-constant speed, so a greedy
-nearest-neighbor association with EMA velocities is enough — no Kalman needed.
+nearest-neighbor association with EMA velocities is enough. No Kalman needed.
 Velocities here are RELATIVE closing speeds already (BEV moves with our car),
 which is exactly what the planner wants.
 """

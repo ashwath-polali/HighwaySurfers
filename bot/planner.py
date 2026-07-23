@@ -93,7 +93,7 @@ class Planner:
 
         elif self.state == "CHANGE":
             tl = self.target_lane
-            # target lane got dangerous mid-change -> re-evaluate
+            # target lane got dangerous mid-change, so re-evaluate
             if tl is not None and tl < n_lanes and clear[tl] < brake_dist:
                 best = self._best_reachable(cur, clear, side_block, n_lanes)
                 if best is not None and best != tl and clear[best] > clear[tl]:
@@ -121,7 +121,7 @@ class Planner:
         gas = effective_clear > safe * 0.75 and self.state != "BRAKE_WAIT"
         brake_ms = 0.0
         if self.state == "BRAKE_WAIT" or effective_clear < brake_dist:
-            # deeper deficit -> longer tap
+            # deeper deficit means a longer tap
             deficit = 1.0 - min(effective_clear / max(brake_dist, 1e-6), 1.0)
             brake_ms = self.cfg.brake_tap_ms * (0.5 + 0.5 * deficit)
 

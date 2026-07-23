@@ -1,6 +1,6 @@
-# HighwaySurfers — Roblox highway autopilot
+# HighwaySurfers, highway autopilot
 
-Watches the Roblox window (screen capture only — nothing touches the game
+Watches the game window (screen capture only so nothing touches the game
 process) and drives with synthetic W/A/S/D. Perception is classic OpenCV:
 the road is gray, lines are white, so anything else on the road is a car.
 
@@ -13,8 +13,8 @@ python -m venv .venv
 
 ## Game setup, every session
 
-- Roblox **windowed** (don't move/resize the window while the bot runs)
-- Graphics quality **level 1** (flat game — looks the same, halves your latency)
+- Game **windowed** (don't move/resize the window while the bot runs)
+- Graphics quality **level 1** (the game is flat-shaded, so it looks the same but your latency drops)
 - Close the leaderboard/people panel (it covers the road)
 - Default chase camera
 
@@ -32,9 +32,9 @@ python -m venv .venv
 # 3. Measure steering response (same setup)
 .\.venv\Scripts\python.exe run.py calibrate
 
-# 4. Drive: just double-click drive.bat with Roblox open. Autopilot starts
+# 4. Drive: just double-click drive.bat with game open. Autopilot starts
 #    immediately, clicks through the death screen (Menu -> Play, never the
-#    Robux Revive) and keeps farming runs. F8 pauses, F9 panic-quits.
+#    paid Revive) and keeps farming runs. F8 pauses, F9 panic-quits.
 .\.venv\Scripts\python.exe run.py drive
 #    add --overlay to watch the bot's bird's-eye view live
 #    add --no-autostart to arm it manually with F8

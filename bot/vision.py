@@ -12,8 +12,8 @@ edge lines and horizontally remap every row so the road spans the full raster
 width. In rectified space:
   - lane lines are vertical, lane width constant,
   - off-road content is geometrically gone,
-  - the car's own position IS its x within the road: own_x moves as the car
-    moves, own_vx (+ = rightward, px/frame) is the steering feedback signal.
+  - the car's own position IS its x within the road. own_x moves as the car
+    moves, and own_vx (+ = rightward, px/frame) is the steering feedback signal.
 
 Coordinates: x 0..bev_w = road left..right edge; y 0..bev_h far..near.
 """
@@ -53,7 +53,8 @@ def _subpixel_peak(scores: np.ndarray, idx: int) -> float:
 
 def profile_shift(prev: np.ndarray, cur: np.ndarray, max_shift: int) -> Optional[float]:
     """How far did `prev`'s content move to become `cur`? + = right/down.
-    Normalized cross-correlation, subpixel refined. None = not enough signal."""
+    Normalized cross-correlation, subpixel refined. Returns None when there
+    isn't enough signal."""
     if prev is None or cur is None or len(prev) != len(cur):
         return None
     p = prev.astype(np.float32)
@@ -173,7 +174,7 @@ class Vision:
 
         # --- own position within the road + lateral velocity ---
         # own_x_raw is where screen-center falls between the road edges at the
-        # bottom row, remapped to 0..bev_w. It moves as the car changes lanes.
+        # bottom row, remapped onto 0..bev_w. It moves as the car changes lanes.
         bottom = cfg.bev_h - 1
         l_b, r_b = left_arr[bottom], right_arr[bottom]
         own_x_raw = (cfg.bev_w / 2.0 - l_b) / max(r_b - l_b, 1e-6) * cfg.bev_w

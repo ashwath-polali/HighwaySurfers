@@ -1,6 +1,6 @@
 """Entry point.
 
-    python run.py view        live perception overlay, no keys sent — tune here first
+    python run.py view        live perception overlay, no keys sent (tune here first)
     python run.py shot        save one annotated frame pair to disk and exit
     python run.py probe       measure input dead time  -> calibration.json
     python run.py calibrate   measure steering response -> calibration.json
@@ -31,7 +31,7 @@ def _first_frame(capture):
 def _place_debug_windows(names, region) -> None:
     """Park debug windows OUTSIDE the capture region. Both capture backends grab
     a rectangle of the desktop, so a window sitting over the game would be warped
-    back into perception — a silent feedback loop. Move them to the right of the
+    back into perception, a silent feedback loop. Move them to the right of the
     region (or below if there's no room) and warn if they might still overlap."""
     l, t, r, b = region
     x = r + 8          # just right of the captured area
@@ -39,8 +39,8 @@ def _place_debug_windows(names, region) -> None:
     for i, name in enumerate(names):
         cv2.namedWindow(name, cv2.WINDOW_NORMAL)
         cv2.moveWindow(name, x, y + i * 300)
-    print(f"[debug] windows parked at x>={x}. Keep them off the game window — "
-          "if one overlaps the captured area it will corrupt perception.")
+    print(f"[debug] windows parked at x>={x}. Keep them off the game window. "
+          "If one overlaps the captured area it will corrupt perception.")
 
 
 def mode_view(cfg, save_one: bool = False) -> None:
@@ -126,7 +126,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     print(f"[drive] latency={cal['latency_ms']:.0f}ms "
           f"vmax={cal['steer_vmax_px_s']:.0f}px/s coast={cal['steer_coast_s']:.2f}s")
     if "latency_samples_ms" not in cal:
-        print("[drive] WARNING: no probe data found — using default latency. "
+        print("[drive] WARNING: no probe data found, using default latency. "
               "Run `python run.py probe` for real numbers.")
     print(f"[drive] autopilot starts {'ON' if autostart else 'OFF'}. "
           "F8 = autopilot on/off, F9 = panic quit.")

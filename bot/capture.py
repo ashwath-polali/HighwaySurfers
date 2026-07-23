@@ -3,8 +3,8 @@
 Primary backend: dxcam (DXGI desktop duplication, fast, Windows only).
 Fallback: mss (slower but always works).
 
-The game window is located by title via pygetwindow and the *client area*
-(no title bar / borders) is computed with Win32 calls so HUD fractions in
+The game window is located by title via pygetwindow, and the *client area*
+(no title bar or borders) is computed with Win32 calls so HUD fractions in
 config line up with what the game actually renders.
 """
 import ctypes
@@ -27,7 +27,7 @@ def _make_dpi_aware() -> None:
 
 def _find_window(window_title: str):
     """Pick the best matching window. getWindowsWithTitle is a case-insensitive
-    substring match, so several windows (a browser tab, a chat) can match — take
+    substring match, so several windows (a browser tab, a chat) can match. Take
     the largest visible one, which is the actual game client."""
     import pygetwindow as gw
 
@@ -103,7 +103,7 @@ class Capture:
             return
         except Exception as e:  # noqa: BLE001 - any dxcam failure falls back to mss
             print(f"[capture] dxcam unavailable ({e}); falling back to mss. "
-                  "(dxcam only captures the primary monitor — if the game is on "
+                  "(dxcam only captures the primary monitor. If the game is on "
                   "a second screen, move it to the primary one for the fast path.)")
             self._camera = None
 

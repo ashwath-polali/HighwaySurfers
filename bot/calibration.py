@@ -1,17 +1,17 @@
 """Measurement routines. Run these BEFORE trusting the bot at speed.
 
-probe     — input dead time: inject a steer tap, watch the car's position
-            within the road, measure ms until it visibly moves. This number
-            feeds every prediction the planner makes.
-calibrate — steering response: hold left/right for several durations, track
-            how far the car slides, extract max lateral speed + post-release
-            coast.
+probe     input dead time: inject a steer tap, watch the car's position
+          within the road, measure ms until it visibly moves. This number
+          feeds every prediction the planner makes.
+calibrate steering response: hold left/right for several durations, track
+          how far the car slides, extract max lateral speed and post-release
+          coast.
 
 Both assume: the game window focused, car already at cruising speed on open
 road (pick easy mode / low traffic), bot holds the gas for you during the run.
 
 Everything is measured in rectified road space (own_x_raw, 0..bev_w spanning
-the road's full width) — the same space the steering controller plans in.
+the road's full width), the same space the steering controller plans in.
 """
 import statistics
 import time

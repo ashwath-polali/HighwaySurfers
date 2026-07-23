@@ -5,7 +5,7 @@ Main menu:    [Play] green, centered                    -> click PLAY
 
 Robux safety: a green button is only ever clicked when NO orange button is
 visible AND it sits in the horizontal center band. "Revive" is green but
-left-of-center and always appears next to the orange "Menu" — it can't match.
+left-of-center and always appears next to the orange "Menu", so it can't match.
 
 Buttons are found by color + shape, not position: solid saturated blob, wide
 aspect, lower 60% of the screen, sane size, with white text inside. That last
@@ -20,7 +20,7 @@ import numpy as np
 # HSV (OpenCV ranges: H 0..179). The green floor is deliberately high in
 # saturation and value: UI buttons are vivid green, roadside grass is duller,
 # so this keeps grass out. The white-text check below is the real discriminator
-# regardless — grass carries no label text.
+# regardless, since grass carries no label text.
 GREEN_LO, GREEN_HI = (40, 150, 150), (85, 255, 255)
 ORANGE_LO, ORANGE_HI = (8, 140, 140), (28, 255, 255)
 WHITE_S_MAX, WHITE_V_MIN = 70, 200
