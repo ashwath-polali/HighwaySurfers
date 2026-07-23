@@ -14,7 +14,7 @@ import traceback
 import cv2
 
 from .config import Config, load_calibration
-from .capture import open_capture, get_game_hwnd, is_foreground
+from .capture import open_capture, foreground_is_game, _foreground_title
 from .vision import Vision
 from .tracker import Tracker
 from .planner import Planner
@@ -132,17 +132,14 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     hotkeys = Hotkeys()
     navigator = UINavigator(capture.region)
     telemetry = Telemetry(cfg)
-    try:
-        hwnd = get_game_hwnd(cfg.window_title)
-    except Exception:
-        hwnd = None
 
-    # The single source of truth for "may we send input right now": only when
-    # the game window is the foreground window. Controls enforces this on every
-    # key/click, and the loop below also skips whole frames when it's false, so
-    # nothing can leak into another app.
+    # The single source of truth for "may we send input right now": only when the
+    # focused window is literally titled like the game (checked live, not via a
+    # cached handle, so the editor can never be mistaken for the game). Controls
+    # enforces this on every key/click, and the loop skips whole frames when it
+    # is false, so nothing can leak into another app.
     def focused() -> bool:
-        return hwnd is not None and is_foreground(hwnd)
+        return foreground_is_game(cfg.window_title)
     controls = Controls(gate=focused)
 
     hotkeys.start()
@@ -150,15 +147,14 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
     print(f"[drive] latency={cal['latency_ms']:.0f}ms "
           f"vmax={cal['steer_vmax_px_s']:.0f}px/s coast={cal['steer_coast_s']:.2f}s")
-    if hwnd is None:
-        print("[drive] WARNING: could not find the game window; input stays "
-              "disabled until it is open. Nothing will be typed anywhere.")
     if "latency_samples_ms" not in cal:
         print("[drive] no probe data found, using default latency.")
     print(f"[drive] autopilot starts {'ON' if autostart else 'OFF'}. "
           "F8 = autopilot on/off, F9 = panic quit.")
     print("[drive] KEEP THE GAME WINDOW FOCUSED. The bot only acts while the "
           "game is the active window; click it now.")
+    print(f"[drive] focus self-check: active window is '{_foreground_title()}', "
+          f"game-match={focused()} (expects True once you click the game).")
     if overlay:
         _place_debug_windows(["bot"], capture.region)
     for i in (3, 2, 1):

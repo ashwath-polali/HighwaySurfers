@@ -26,19 +26,47 @@ def _make_dpi_aware() -> None:
 
 
 def _find_window(window_title: str):
-    """Pick the best matching window. getWindowsWithTitle is a case-insensitive
-    substring match, so several windows (a browser tab, a chat) can match. Take
-    the largest visible one, which is the actual game client."""
+    """Pick the game window. getWindowsWithTitle is a loose case-insensitive
+    substring match, so an editor or browser tab can sneak in. Prefer an EXACT
+    title match (the game client's title is exactly 'Roblox'); only fall back to
+    the largest substring match if nothing matches exactly."""
     import pygetwindow as gw
 
-    wins = [w for w in gw.getWindowsWithTitle(window_title) if w.title.strip()]
-    wins = [w for w in wins if w.visible and w.width > 200 and w.height > 200]
+    wins = [w for w in gw.getWindowsWithTitle(window_title)
+            if w.title.strip() and w.visible and w.width > 200 and w.height > 200]
     if not wins:
         raise RuntimeError(
-            f"No usable window with title containing '{window_title}' found. "
+            f"No usable window titled '{window_title}' found. "
             "Is the game running and un-minimized?"
         )
-    return max(wins, key=lambda w: w.width * w.height)
+    exact = [w for w in wins if w.title.strip().lower() == window_title.strip().lower()]
+    pool = exact or wins
+    return max(pool, key=lambda w: w.width * w.height)
+
+
+def _foreground_title() -> str:
+    """Title of whatever window currently has focus (empty string if none)."""
+    u = ctypes.windll.user32
+    u.GetForegroundWindow.restype = wintypes.HWND
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    n = u.GetWindowTextLengthW(hwnd)
+    if n <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(n + 1)
+    u.GetWindowTextW(hwnd, buf, n + 1)
+    return buf.value
+
+
+def foreground_is_game(window_title: str) -> bool:
+    """True only when the focused window IS the game, matched by its exact title.
+
+    Checking the live foreground title (not a cached handle) is what keeps the
+    bot from mistaking the editor for the game: it drives only while the window
+    receiving keystrokes is actually titled '<window_title>'.
+    """
+    return _foreground_title().strip().lower() == window_title.strip().lower()
 
 
 def find_game_client_region(window_title: str) -> tuple:
