@@ -1,0 +1,7 @@
+numpy>=1.24,<2.0
+opencv-python>=4.8
+dxcam>=0.0.5
+mss>=9.0
+pygetwindow>=0.0.9
+pydirectinput>=1.0.4
+pynput>=1.7.6
