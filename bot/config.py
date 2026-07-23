@@ -81,13 +81,19 @@ class Config:
     # Collision timing comes from each obstacle's tracked closing speed, not the
     # dashed-line forward flow (that aliases and reads ~0). A very close obstacle
     # is a threat regardless of measured closing speed.
-    # gap-dodge geometry (fixed BEV px; car at bev_w/2, bev_h=360)
-    path_half_px: float = 26.0        # half-width of our column that must stay clear
-    dodge_shift_px: float = 42.0      # sideways offset we aim for when dodging
+    # ---- path planner (grid search over the road ahead; fixed BEV px) ----
     road_edge_margin_px: float = 16.0  # keep this far inside the road edge
-    safe_ahead_px: float = 300.0      # column clear beyond this = fine to cruise
-    brake_ahead_px: float = 85.0      # best column worse than this = brake
-    dodge_gain: float = 1.25          # a side must be this much clearer to switch to it
+    grid_cols: int = 23               # lateral resolution of the plan
+    grid_rows: int = 12               # depth (lookahead) resolution
+    player_half_px: float = 20.0      # our car half-width, for obstacle inflation
+    safety_margin_px: float = 7.0     # extra clearance around each car
+    pad_y_px: float = 16.0            # obstacle length padding along travel
+    max_col_step: int = 3             # most columns the route may shift per row
+    steer_target_row: int = 2         # steer toward the route point this far ahead
+    steer_deadband_px: float = 9.0    # within this of the route -> don't steer
+    slow_depth: int = 2               # route reaches fewer rows than this -> coast
+    brake_depth: int = 1              # route blocked this soon -> brake
+    path_stick_bias: float = 0.6      # prefer last frame's route (kills flip-flop)
     ttc_brake_s: float = 0.45         # nothing reachable safer than this -> brake
     ttc_change_margin_s: float = 0.30  # a target lane must beat current by this much
     side_margin_ahead: float = 55.0   # a car this close beside us blocks a change

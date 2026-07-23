@@ -81,11 +81,12 @@ def main() -> None:
     assert abs(per.car_x - cfg.bev_w / 2) < 1, "car_x should be fixed at center"
     assert len(per.obstacles) >= 1, "car ahead not detected as obstacle"
     assert len(tracks) >= 1, "tracker lost the car"
-    # a car in our column should make the planner steer or brake, not cruise on
-    assert plan.state in ("CRUISE", "CHANGE", "BRAKE_WAIT")
+    # a car dead ahead: the planner should route around it (a steered path)
+    assert plan.state in ("CRUISE", "CHANGE", "SLOW", "BRAKE_WAIT")
     assert plan.n_threats >= 1, "car ahead should register as a threat"
-    assert plan.state == "CHANGE" and plan.steer_key is not None, \
-        f"should dodge a car dead ahead, got {plan.state}/{plan.steer_key}"
+    assert len(plan.path_x) >= 2, "planner produced no route"
+    assert plan.steer_key is not None, \
+        f"should steer around a car dead ahead, got {plan.state}/{plan.steer_key}"
 
     # UI navigator: menu on a gray-road background (like the real game), with a
     # top grass strip that the cy filter must reject, and a centered green Play.
@@ -115,7 +116,8 @@ def main() -> None:
     print("SMOKE TEST PASSED")
     print(f"  road_q: {per.road_quality:.2f}  road: {per.road_left:.0f}..{per.road_right:.0f}"
           f"  obstacles: {len(per.obstacles)}  tracks: {len(tracks)}")
-    print(f"  plan: {plan.state}  steer={plan.steer_key}  threats={plan.n_threats}")
+    print(f"  plan: {plan.state}  steer={plan.steer_key}  threats={plan.n_threats}"
+          f"  route_depth={plan.depth}  route_pts={len(plan.path_x)}")
 
 
 if __name__ == "__main__":

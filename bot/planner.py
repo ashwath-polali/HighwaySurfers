@@ -1,21 +1,25 @@
-"""Planning + control: dodge by gaps, in the fixed bird's-eye view.
+"""Planning + control: plan a route through the walls, then follow it.
 
-The car sits at a fixed spot (bottom-center). For any lateral column we can ask
-"how far ahead is the nearest car in it?" and drive toward the emptiest reachable
-column, committing until our own column is clear again. Looking at the WHOLE
-column ahead (not just the point beside us) is what stops it from diving into a
-lane that has another car further up.
+This game is "thread the gap in a wall," where each wall is a row of cars with
+holes between them. A reactive dodge-the-nearest-car controller jitters and gets
+trapped, because it only ever looks one car ahead. Instead we PLAN:
 
-  - Column ahead clear past `safe_ahead_px`: hold gas, don't steer.
-  - Otherwise aim for the reachable column (left / straight / right) with the most
-    room, and hold that steer key. To switch sides it must be clearly better, so
-    it commits instead of dithering.
-  - Nothing reachable has room (`brake_ahead_px`): brake to buy time.
+  1. Lay a grid over the road ahead (columns across, rows into the distance).
+  2. Mark cells blocked by cars, inflated by our own width so the plan can treat
+     the car as a point.
+  3. Shortest-path search (dynamic programming) from our position forward, where
+     the route may only shift a few columns per row (our real steering rate) and
+     pays for lateral movement. The result is the smoothest collision-free route
+     through ALL the visible walls at once, not just the next car.
+  4. Steer smoothly toward the route a step ahead. A stable global route means a
+     stable target, which means fine corrections instead of jitter.
 
-Held controls; D/RIGHT moves the car right, A/LEFT left. Obstacles are projected
-forward by the measured input latency before deciding.
+Speed: full gas while a route runs far enough ahead; coast only when the road
+tightens to nearly blocked; brake only when boxed in. Held controls; D/RIGHT
+moves the car right, A/LEFT left. Obstacles are projected forward by the measured
+input latency before planning.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .controls import LEFT, RIGHT
@@ -31,6 +35,8 @@ class Plan:
     brake: bool
     steer_key: Optional[str]
     n_threats: int
+    path_x: list = field(default_factory=list)  # route x per row, for debug/telemetry
+    depth: int = 0                                # how many rows the route reaches
 
 
 class Planner:
@@ -38,80 +44,110 @@ class Planner:
         self.cfg = cfg
         self.cal = calibration
         self.state = "CRUISE"
-        self.dodge_dir: Optional[str] = None
+        self.prev_target_col: Optional[int] = None
 
     def plan(self, per, tracks: list, fps: float) -> Plan:
         cfg = self.cfg
         fps = max(fps, 6.0)
-        car_x = per.car_x
-        car_y = cfg.bev_h
+        car_x, car_y = per.car_x, cfg.bev_h
+        NC, NR = cfg.grid_cols, cfg.grid_rows
+        rl = per.road_left + cfg.road_edge_margin_px
+        rr = per.road_right - cfg.road_edge_margin_px
+        if rr - rl < 20:                       # no usable road this frame
+            return Plan("CRUISE", car_x, True, False, None, 0)
+
+        col_x = [rl + (c + 0.5) / NC * (rr - rl) for c in range(NC)]
+        row_y = [car_y * (1.0 - (r + 0.5) / NR) for r in range(NR)]  # r0 near..far
         lookahead = (self.cal["latency_ms"] / 1000.0 + cfg.lookahead_extra_s) * fps
 
-        # Predicted obstacle positions (x, nearest-edge y, half width).
-        obs = []
+        # --- occupancy grid (obstacles inflated by our own size) ---
+        blocked = [[False] * NC for _ in range(NR)]
+        infl = cfg.player_half_px + cfg.safety_margin_px
+        n_threats = 0
         for tr in tracks:
             px, _py = tr.predict(lookahead)
-            dist = car_y - tr.y
-            if dist > 0:
-                obs.append((px, dist, tr.w / 2.0))
+            if car_y - tr.y > 0:
+                n_threats += 1
+            x0, x1 = px - tr.w / 2 - infl, px + tr.w / 2 + infl
+            y0, y1 = tr.y - tr.h - cfg.pad_y_px, tr.y + cfg.pad_y_px
+            for r in range(NR):
+                if y0 <= row_y[r] <= y1:
+                    row = blocked[r]
+                    for c in range(NC):
+                        if x0 <= col_x[c] <= x1:
+                            row[c] = True
 
-        def clear_ahead(center: float) -> float:
-            """Distance to the nearest car whose body overlaps this column."""
-            best = INF
-            for (x, dist, hw) in obs:
-                if abs(x - center) < cfg.path_half_px + hw:
-                    best = min(best, dist)
-            return best
+        # --- shortest-path (DP) from our column forward ---
+        start_c = min(range(NC), key=lambda c: abs(col_x[c] - car_x))
+        S = cfg.max_col_step
+        cost = [[INF] * NC for _ in range(NR)]
+        par = [[-1] * NC for _ in range(NR)]
+        for c in range(NC):
+            if not blocked[0][c] and abs(c - start_c) <= S:
+                cost[0][c] = abs(c - start_c)
+                par[0][c] = start_c
+        for r in range(1, NR):
+            prev = cost[r - 1]
+            for c in range(NC):
+                if blocked[r][c]:
+                    continue
+                best, bp = INF, -1
+                for c2 in range(max(0, c - S), min(NC, c + S + 1)):
+                    cand = prev[c2] + abs(c - c2)
+                    if cand < best:
+                        best, bp = cand, c2
+                if bp >= 0:
+                    stick = 0.0
+                    if self.prev_target_col is not None:
+                        stick = cfg.path_stick_bias * abs(c - self.prev_target_col) / NC
+                    cost[r][c] = best + 0.04 * abs(c - start_c) + stick
+                    par[r][c] = bp
 
-        def on_road(x: float) -> bool:
-            return (per.road_left + cfg.road_edge_margin_px
-                    < x < per.road_right - cfg.road_edge_margin_px)
+        # deepest row the route reaches
+        depth = 0
+        for r in range(NR):
+            if any(cost[r][c] < INF for c in range(NC)):
+                depth = r
+        end_row = depth
+        free_end = [c for c in range(NC) if cost[end_row][c] < INF]
+        if not free_end:
+            # even the first step is blocked: hold position, brake
+            self.state = "BRAKE_WAIT"
+            self.prev_target_col = start_c
+            return Plan("BRAKE_WAIT", car_x, False, True, None, n_threats, [], 0)
+        end_c = min(free_end, key=lambda c: cost[end_row][c])
 
-        center_clear = clear_ahead(car_x)
-        n_threats = sum(1 for (_x, d, _h) in obs if d < cfg.safe_ahead_px)
+        # backtrack the route to a list of columns per row
+        cols = []
+        r, c = end_row, end_c
+        while r >= 0 and c >= 0:
+            cols.append(c)
+            c = par[r][c]
+            r -= 1
+        cols.reverse()
+        path_x = [col_x[c] for c in cols]
 
-        steer = None
-        brake = False
-        if center_clear >= cfg.safe_ahead_px:
-            self.dodge_dir = None
-            self.state = "CRUISE"
+        # --- steering: aim at the route a couple rows ahead ---
+        ti = min(cfg.steer_target_row, len(cols) - 1)
+        target_col = cols[ti]
+        target_x = col_x[target_col]
+        self.prev_target_col = cols[min(1, len(cols) - 1)]
+
+        err = target_x - car_x
+        if abs(err) < cfg.steer_deadband_px:
+            steer = None
         else:
-            left_x, right_x = car_x - cfg.dodge_shift_px, car_x + cfg.dodge_shift_px
-            left = clear_ahead(left_x) if on_road(left_x) else -1.0
-            right = clear_ahead(right_x) if on_road(right_x) else -1.0
+            steer = RIGHT if err > 0 else LEFT   # target to the right -> press D
 
-            # Commit: keep the current dodge side unless the other is clearly better.
-            if self.dodge_dir == "L" and left > cfg.brake_ahead_px:
-                chosen = "L"
-            elif self.dodge_dir == "R" and right > cfg.brake_ahead_px:
-                chosen = "R"
-            else:
-                chosen = None
-                best_side = max(left, right)
-                if best_side > center_clear * cfg.dodge_gain and best_side > cfg.brake_ahead_px:
-                    chosen = "L" if left >= right else "R"
-
-            if chosen is None:
-                if center_clear < cfg.brake_ahead_px and max(left, right) < cfg.brake_ahead_px:
-                    self.state = "BRAKE_WAIT"
-                    brake = True
-                else:
-                    self.state = "CRUISE"   # ride it out; nowhere better to go yet
-                self.dodge_dir = None
-            else:
-                self.state = "CHANGE"
-                self.dodge_dir = chosen
-                steer = RIGHT if chosen == "R" else LEFT
-
-        # Speed control: only floor it when the road directly ahead is open.
-        # In traffic we coast (no gas, no brake) so the car sheds a little speed
-        # and there is time to actually complete a dodge. This is the difference
-        # between surviving and rocketing into the first gap that closes.
-        gas = (not brake) and center_clear >= cfg.safe_ahead_px
-        if steer == RIGHT:
-            target_x = car_x + cfg.dodge_shift_px
-        elif steer == LEFT:
-            target_x = car_x - cfg.dodge_shift_px
+        # --- speed: only ease off when the road ahead genuinely tightens ---
+        if depth <= cfg.brake_depth:
+            brake, gas = True, False
+            self.state = "BRAKE_WAIT"
+        elif depth < cfg.slow_depth:
+            brake, gas = False, False            # coast, it is getting tight
+            self.state = "SLOW"
         else:
-            target_x = car_x
-        return Plan(self.state, target_x, gas, brake, steer, n_threats)
+            brake, gas = False, True
+            self.state = "CHANGE" if steer else "CRUISE"
+
+        return Plan(self.state, target_x, gas, brake, steer, n_threats, path_x, depth)

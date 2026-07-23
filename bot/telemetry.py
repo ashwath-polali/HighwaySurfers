@@ -36,6 +36,8 @@ class Telemetry:
             "steer": plan.steer_key if plan else None,
             "gas": bool(plan.gas) if plan else None,
             "brake": bool(plan.brake) if plan else None,
+            "depth": int(getattr(plan, "depth", 0)) if plan else 0,
+            "path": [round(float(x), 1) for x in getattr(plan, "path_x", [])] if plan else [],
             "n_threats": int(plan.n_threats) if plan else 0,
             "car_x": round(float(per.car_x), 1),
             "road": [round(float(per.road_left), 1), round(float(per.road_right), 1)],

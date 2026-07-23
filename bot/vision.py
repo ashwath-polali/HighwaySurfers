@@ -143,9 +143,18 @@ class Vision:
                           (int(cx + bw / 2), int(cyb)), (0, 0, 255), 2)
         cv2.circle(bev, (int(per.car_x), self.cfg.bev_h - 4), 5, (0, 255, 0), -1)
         if plan is not None:
-            cv2.putText(bev, f"{plan.state} steer={plan.steer_key or '-'}",
+            cv2.putText(bev, f"{plan.state} d={getattr(plan, 'depth', 0)} "
+                        f"steer={plan.steer_key or '-'}",
                         (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            if plan.target_x is not None:
-                cv2.line(bev, (int(plan.target_x), self.cfg.bev_h - 24),
-                         (int(plan.target_x), self.cfg.bev_h), (0, 255, 0), 2)
+            # the planned route through the walls
+            path = getattr(plan, "path_x", None) or []
+            nr = self.cfg.grid_rows
+            pts = [(int(per.car_x), self.cfg.bev_h)]
+            for i, px in enumerate(path):
+                y = int(self.cfg.bev_h * (1.0 - (i + 0.5) / nr))
+                pts.append((int(px), y))
+            for a, b in zip(pts, pts[1:]):
+                cv2.line(bev, a, b, (0, 255, 0), 2)
+            for p in pts[1:]:
+                cv2.circle(bev, p, 2, (0, 255, 255), -1)
         return vis, bev
