@@ -103,6 +103,41 @@ class Controls:
         return "-"
 
 
+class KeyWatcher:
+    """Read-only global watch of the human's W/A/S/D via a low-level hook, so we
+    can log real play (the hook sees keys even while the game has focus). It
+    never sends anything."""
+
+    def __init__(self):
+        self.held = set()
+        self._listener = None
+
+    def start(self) -> None:
+        from pynput import keyboard
+
+        def on_press(key):
+            c = getattr(key, "char", None)
+            if c and c.lower() in "wasd":
+                self.held.add(c.lower())
+
+        def on_release(key):
+            c = getattr(key, "char", None)
+            if c and c.lower() in "wasd":
+                self.held.discard(c.lower())
+
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._listener.daemon = True
+        self._listener.start()
+
+    def snapshot(self) -> dict:
+        h = self.held
+        return {"w": "w" in h, "a": "a" in h, "s": "s" in h, "d": "d" in h}
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
+
+
 class Hotkeys:
     """Global F8 (toggle) / F9 (panic quit) listener via pynput low-level hook."""
 

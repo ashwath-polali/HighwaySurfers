@@ -2,6 +2,7 @@
 
     python run.py view        live perception overlay, no keys sent (tune here first)
     python run.py shot        save one annotated frame pair to disk and exit
+    python run.py record      log a human play session (you play, it watches)
     python run.py probe       measure input dead time  -> calibration.json
     python run.py calibrate   measure steering response -> calibration.json
     python run.py drive       autopilot (F8 toggles, F9 panic-quits)
@@ -18,8 +19,8 @@ from .capture import open_capture, foreground_is_game, _foreground_title
 from .vision import Vision
 from .tracker import Tracker
 from .planner import Planner
-from .controls import Controls, Hotkeys, GAS, BRAKE, LEFT, RIGHT
-from .telemetry import Telemetry
+from .controls import Controls, Hotkeys, KeyWatcher, GAS, BRAKE, LEFT, RIGHT
+from .telemetry import Telemetry, Recorder
 
 
 def _first_frame(capture):
@@ -96,6 +97,44 @@ def mode_view(cfg, save_one: bool = False) -> None:
     finally:
         capture.close()
         cv2.destroyAllWindows()
+
+
+def mode_record(cfg) -> None:
+    """Log a human play session (perception + the player's real keys). Sends no
+    input; you play, it watches. Press F9 to stop."""
+    capture = open_capture(cfg)
+    frame = _first_frame(capture)
+    vision = Vision(cfg, frame.shape)
+    recorder = Recorder(cfg)
+    watcher = KeyWatcher()
+    watcher.start()
+    hotkeys = Hotkeys()
+    hotkeys.start()
+    print("[record] PLAY NORMALLY. It logs your keys + the screen while the game "
+          "is focused. Press F9 when done.")
+    fps, prev_t, last_status = 0.0, None, 0.0
+    try:
+        while not hotkeys.quit:
+            frame, t = capture.read()
+            if frame is None:
+                continue
+            if prev_t is not None:
+                inst = 1.0 / max(t - prev_t, 1e-6)
+                fps = 0.9 * fps + 0.1 * inst if fps else inst
+            prev_t = t
+            per = vision.process(frame)
+            if foreground_is_game(cfg.window_title):
+                recorder.log(per, watcher.snapshot(), fps)
+            if t - last_status > 2.0:
+                k = watcher.snapshot()
+                pressed = "".join(c.upper() if k[c] else "-" for c in "wasd")
+                print(f"[record] {recorder.n} frames  {fps:.0f}fps  keys={pressed}")
+                last_status = t
+    finally:
+        recorder.close()
+        watcher.stop()
+        hotkeys.stop()
+        capture.close()
 
 
 def mode_probe(cfg) -> None:
@@ -255,7 +294,8 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="highway driving autopilot")
-    parser.add_argument("mode", choices=["view", "shot", "probe", "calibrate", "drive"])
+    parser.add_argument("mode",
+                        choices=["view", "shot", "record", "probe", "calibrate", "drive"])
     parser.add_argument("--overlay", action="store_true",
                         help="drive mode: show live BEV window + dump debug frames")
     parser.add_argument("--debug-frames", type=int, default=0,
@@ -272,6 +312,8 @@ def main() -> None:
         mode_view(cfg)
     elif args.mode == "shot":
         mode_view(cfg, save_one=True)
+    elif args.mode == "record":
+        mode_record(cfg)
     elif args.mode == "probe":
         mode_probe(cfg)
     elif args.mode == "calibrate":

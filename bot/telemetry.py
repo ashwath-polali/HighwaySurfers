@@ -58,3 +58,43 @@ class Telemetry:
 
     def close(self) -> None:
         self._f.close()
+
+
+class Recorder:
+    """Logs a human play session: the perceived state plus the real keys the
+    player held that frame. This is the ground truth for how a person actually
+    drives (fine A/D corrections, gas/brake rhythm) and for the input->motion
+    response (keys vs own_x in the same row)."""
+
+    def __init__(self, cfg):
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.dir = os.path.join(cfg.runs_dir, "..", "records", stamp)
+        self.dir = os.path.normpath(self.dir)
+        os.makedirs(self.dir, exist_ok=True)
+        self._f = open(os.path.join(self.dir, "play.jsonl"), "w",
+                       encoding="utf-8", buffering=1)
+        self.n = 0
+        print(f"[record] logging to {self.dir}")
+
+    def log(self, per, keys: dict, fps: float) -> None:
+        rec = {
+            "t": round(time.perf_counter(), 3),
+            "fps": round(float(fps), 1),
+            "keys": {k: bool(v) for k, v in keys.items()},
+            "own_lane": int(per.own_lane),
+            "own_x": round(float(per.own_x), 1),
+            "own_x_raw": round(float(per.own_x_raw), 1),
+            "own_vx": round(float(per.own_vx), 2),
+            "dy": round(float(per.dy), 2),
+            "edge_q": round(float(per.edge_quality), 2),
+            "lanes": [round(float(c), 1) for c in per.lane_centers],
+            # obstacles in rectified road space: nearest edge, center x, width
+            "blobs": [[round(float(b[0]), 1), round(float(b[1]), 1), round(float(b[2]), 1)]
+                      for b in per.blobs],
+        }
+        self._f.write(json.dumps(rec) + "\n")
+        self.n += 1
+
+    def close(self) -> None:
+        self._f.close()
+        print(f"[record] saved {self.n} frames to {self.dir}")
