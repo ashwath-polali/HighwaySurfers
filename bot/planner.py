@@ -65,11 +65,11 @@ class Planner:
         infl = cfg.player_half_px + cfg.safety_margin_px
         n_threats = 0
         for tr in tracks:
-            px, _py = tr.predict(lookahead)
+            px, py = tr.predict(lookahead)      # project BOTH axes by input latency
             if car_y - tr.y > 0:
                 n_threats += 1
             x0, x1 = px - tr.w / 2 - infl, px + tr.w / 2 + infl
-            y0, y1 = tr.y - tr.h - cfg.pad_y_px, tr.y + cfg.pad_y_px
+            y0, y1 = py - tr.h - cfg.pad_y_px, py + cfg.pad_y_px
             for r in range(NR):
                 if y0 <= row_y[r] <= y1:
                     row = blocked[r]
@@ -80,10 +80,17 @@ class Planner:
         # --- shortest-path (DP) from our column forward ---
         start_c = min(range(NC), key=lambda c: abs(col_x[c] - car_x))
         S = cfg.max_col_step
+
+        def span_clear(row: int, a: int, b: int) -> bool:
+            """No blocked cell between columns a..b on `row` (the cells a diagonal
+            step sweeps across). Without this the route clips a car's corner."""
+            lo, hi = (a, b) if a < b else (b, a)
+            return not any(blocked[row][k] for k in range(lo, hi + 1))
+
         cost = [[INF] * NC for _ in range(NR)]
         par = [[-1] * NC for _ in range(NR)]
         for c in range(NC):
-            if not blocked[0][c] and abs(c - start_c) <= S:
+            if not blocked[0][c] and abs(c - start_c) <= S and span_clear(0, start_c, c):
                 cost[0][c] = abs(c - start_c)
                 par[0][c] = start_c
         for r in range(1, NR):
@@ -93,6 +100,11 @@ class Planner:
                     continue
                 best, bp = INF, -1
                 for c2 in range(max(0, c - S), min(NC, c + S + 1)):
+                    if prev[c2] == INF:
+                        continue
+                    # the step must not cross a car on either row it touches
+                    if not span_clear(r, c2, c) or not span_clear(r - 1, c2, c):
+                        continue
                     cand = prev[c2] + abs(c - c2)
                     if cand < best:
                         best, bp = cand, c2
@@ -115,7 +127,9 @@ class Planner:
             self.state = "BRAKE_WAIT"
             self.prev_target_col = start_c
             return Plan("BRAKE_WAIT", car_x, False, True, None, n_threats, [], 0)
-        end_c = min(free_end, key=lambda c: cost[end_row][c])
+        # tie-break toward last frame's route so symmetric gaps don't flip-flop
+        ref = self.prev_target_col if self.prev_target_col is not None else start_c
+        end_c = min(free_end, key=lambda c: (round(cost[end_row][c], 3), abs(c - ref)))
 
         # backtrack the route to a list of columns per row
         cols = []

@@ -91,28 +91,11 @@ class Config:
     max_col_step: int = 3             # most columns the route may shift per row
     steer_target_row: int = 2         # steer toward the route point this far ahead
     steer_deadband_px: float = 9.0    # within this of the route -> don't steer
-    slow_depth: int = 2               # route reaches fewer rows than this -> coast
+    # Route reaches at least slow_depth rows -> full gas; between brake and slow
+    # -> coast; brake_depth or fewer -> brake. (grid has grid_rows rows.)
     brake_depth: int = 1              # route blocked this soon -> brake
-    path_stick_bias: float = 0.6      # prefer last frame's route (kills flip-flop)
-    ttc_brake_s: float = 0.45         # nothing reachable safer than this -> brake
-    ttc_change_margin_s: float = 0.30  # a target lane must beat current by this much
-    side_margin_ahead: float = 55.0   # a car this close beside us blocks a change
-    side_margin_behind: float = 25.0
-    straddle_frac: float = 0.28       # blob within this frac of a boundary spans both lanes
-    change_commit_min_frames: int = 2  # hold a committed lane change at least this long
-
-    # ---- steering: HELD keys (hold length = swing size, per the game) ----
-    # Hold A/D toward the target lane and release early by the distance the car
-    # will still coast, so momentum finishes the swing without overshooting.
-    # Be IN the lane, not pixel-centered. Hysteresis: once steering stops we
-    # don't start again until the car has drifted past the (larger) engage band,
-    # which stops the constant micro-correction chatter under input lag. A short
-    # coast between direction reversals kills the remaining flip-flop.
-    steer_deadband_px: float = 16.0    # inside this of target -> release the key
-    steer_engage_px: float = 34.0      # must exceed this (when idle) to start steering
-    steer_reversal_frames: int = 3     # coast at least this many frames before flipping
-    steer_min_edge_q: float = 0.65     # below this the road fit is too noisy to steer
-    lane_reached_px: float = 20.0      # |own_x - target| under this = change complete
+    slow_depth: int = 4               # route shallower than this -> coast (ease off)
+    path_stick_bias: float = 0.9      # prefer last frame's route (kills flip-flop)
 
     # ---- default calibration (overridden by calibration.json) ----
     latency_ms_default: float = 180.0

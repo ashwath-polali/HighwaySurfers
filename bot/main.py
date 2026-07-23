@@ -79,10 +79,10 @@ def mode_view(cfg, save_one: bool = False) -> None:
                 fps = 0.9 * fps + 0.1 * inst if fps else inst
             prev_t = t
             per = vision.process(frame, want_masks=True)
-            tracks = tracker.update(per.blobs)
+            tracks = tracker.update(per.obstacles)
             plan = planner.plan(per, tracks, fps or cfg.target_fps)
             vis, bev_vis = vision.draw_debug(frame, per, plan)
-            cv2.putText(vis, f"{fps:5.1f} fps  blobs={len(per.blobs)} tracks={len(tracks)}",
+            cv2.putText(vis, f"{fps:5.1f} fps  obs={len(per.obstacles)} tracks={len(tracks)}",
                         (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             if save_one:
                 cv2.imwrite("debug_frame.jpg", vis)
