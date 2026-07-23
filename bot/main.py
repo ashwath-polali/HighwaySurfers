@@ -206,6 +206,8 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     fps, prev_t = 0.0, None
     last_hint_t = 0.0
     crash_streak = 0
+    frame_no = 0
+    frame_saves = 0
     was_ui = True   # click the road to grab canvas focus when a run begins
     try:
         while not hotkeys.quit:
@@ -213,6 +215,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
             if frame is None:
                 controls.update()
                 continue
+            frame_no += 1
             if prev_t is not None:
                 inst = 1.0 / max(t - prev_t, 1e-6)
                 fps = 0.9 * fps + 0.1 * inst if fps else inst
@@ -245,7 +248,11 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
             try:
                 t_proc = time.perf_counter()
-                per = vision.process(frame, want_masks=overlay)
+                # Save a couple annotated frames per second (capped) so a run can
+                # be inspected visually, not just from numbers.
+                save_this = (hotkeys.autopilot and frame_saves < 150
+                             and frame_no % 12 == 0)
+                per = vision.process(frame, want_masks=(overlay or save_this))
                 tracks = tracker.update(per.blobs)
                 plan = planner.plan(per, tracks, fps or cfg.target_fps)
                 proc_ms = (time.perf_counter() - t_proc) * 1000.0
@@ -266,10 +273,15 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                        ("S" if controls.held(BRAKE) else "-") + controls.steer_state()
                 telemetry.log(per, plan, fps, hotkeys.autopilot, keys, proc_ms)
 
-                if overlay:
+                if save_this:
                     vis, bev_vis = vision.draw_debug(frame, per, plan)
-                    telemetry.maybe_dump_frame(vis, bev_vis)
-                    cv2.imshow("bot", bev_vis)
+                    import os as _os
+                    cv2.imwrite(_os.path.join(telemetry.dir, f"f{frame_no:05d}.jpg"), vis)
+                    cv2.imwrite(_os.path.join(telemetry.dir, f"f{frame_no:05d}_bev.jpg"), bev_vis)
+                    frame_saves += 1
+                if overlay:
+                    vis2, bev2 = vision.draw_debug(frame, per, plan)
+                    cv2.imshow("bot", bev2)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
                 crash_streak = 0
