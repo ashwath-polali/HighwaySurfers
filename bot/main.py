@@ -165,7 +165,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
     canvas_x, canvas_y = int(l + (r - l) * 0.5), int(tp + (b - tp) * 0.45)
 
     fps, prev_t = 0.0, None
-    last_brake_t = last_steer_t = last_hint_t = 0.0
+    last_hint_t = 0.0
     crash_streak = 0
     was_ui = True   # click the road to grab canvas focus when a run begins
     try:
@@ -205,30 +205,27 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                 controls.click(canvas_x, canvas_y)
 
             try:
+                t_proc = time.perf_counter()
                 per = vision.process(frame, want_masks=overlay)
                 tracks = tracker.update(per.blobs)
                 plan = planner.plan(per, tracks, fps or cfg.target_fps)
+                proc_ms = (time.perf_counter() - t_proc) * 1000.0
 
                 if hotkeys.autopilot:
-                    # throttle
-                    if plan.brake_tap_ms > 0 and t - last_brake_t > 0.35:
-                        controls.set_key(GAS, False)
-                        controls.tap(BRAKE, plan.brake_tap_ms)
-                        last_brake_t = t
-                    else:
-                        controls.set_key(GAS, plan.gas)
-                    # steering: a short tap, then let the car settle before the
-                    # next one (holding the key oversteers at high responsiveness)
-                    if plan.steer_key and t - last_steer_t > cfg.steer_cooldown_s:
-                        controls.tap(plan.steer_key, plan.steer_tap_ms)
-                        last_steer_t = t
+                    # Everything is HELD: gas to keep speed, brake only in an
+                    # emergency, steer toward the target until we arrive. Never
+                    # gas and brake together.
+                    controls.set_key(GAS, plan.gas)
+                    controls.set_key(BRAKE, plan.brake)
+                    controls.set_key(LEFT, plan.steer_key == LEFT)
+                    controls.set_key(RIGHT, plan.steer_key == RIGHT)
                 else:
                     controls.release_all()
                 controls.update()
 
                 keys = ("W" if controls.held(GAS) else "-") + \
                        ("S" if controls.held(BRAKE) else "-") + controls.steer_state()
-                telemetry.log(per, plan, fps, hotkeys.autopilot, keys)
+                telemetry.log(per, plan, fps, hotkeys.autopilot, keys, proc_ms)
 
                 if overlay:
                     vis, bev_vis = vision.draw_debug(frame, per, plan)

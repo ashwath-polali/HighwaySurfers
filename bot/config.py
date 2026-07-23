@@ -66,27 +66,27 @@ class Config:
     track_min_age: int = 2
     vel_ema_alpha: float = 0.45
 
-    # ---- planning (distances in BEV px; BEV bottom is the car) ----
-    lookahead_extra_s: float = 0.30  # margin on top of measured latency
-    safe_dist_speed_k: float = 9.0   # safe_dist = k * forward_flow(px/frame)
-    safe_dist_min: float = 70.0
-    safe_dist_max: float = 320.0
-    brake_dist_frac: float = 0.45    # brake when clear < brake_dist_frac * safe_dist
-    change_gain_req: float = 1.15    # target lane must beat current by this factor
-    side_margin_ahead: float = 55.0  # blob this close beside us blocks a lane change
+    # ---- planning: time-to-collision based (distances in BEV px) ----
+    # We react to how SOON a car arrives, not just how far it is, so behavior
+    # scales with speed. The bot commits to a lane and only re-plans when the
+    # current lane is actually threatened, instead of chasing the best lane.
+    lookahead_extra_s: float = 0.20   # prediction margin on top of measured latency
+    dy_floor: float = 1.5             # min forward flow (px/frame) used for TTC
+    ttc_danger_s: float = 1.10        # car this soon in our lane -> plan a move
+    ttc_brake_s: float = 0.45         # nothing reachable safer than this -> brake
+    ttc_change_margin_s: float = 0.30  # a target lane must beat current by this much
+    side_margin_ahead: float = 55.0   # a car this close beside us blocks a change
     side_margin_behind: float = 25.0
-    straddle_frac: float = 0.28      # blob within this frac of lane width of a boundary occupies both lanes
+    straddle_frac: float = 0.28       # blob within this frac of a boundary spans both lanes
+    change_commit_min_frames: int = 2  # hold a committed lane change at least this long
 
-    # ---- steering controller ----
-    # The game runs at very high responsiveness, so we nudge with short taps and
-    # let the car settle between them instead of holding a key (which oversteers).
-    steer_tol_px: float = 6.0        # lane-change completion tolerance
-    steer_deadband_px: float = 12.0  # don't steer within this of the target
-    steer_tap_min_ms: int = 22       # gentlest nudge
-    steer_tap_max_ms: int = 80       # biggest single nudge
-    steer_cooldown_s: float = 0.10   # minimum gap between steer taps (let it settle)
-    steer_min_edge_q: float = 0.7    # below this the road fit is too noisy to steer on
-    brake_tap_ms: int = 140
+    # ---- steering: HELD keys (hold length = swing size, per the game) ----
+    # Hold A/D toward the target lane and release early by the distance the car
+    # will still coast, so momentum finishes the swing without overshooting.
+    steer_deadband_px: float = 10.0    # within this of target (after coast) -> release
+    steer_release_lead_s: float = 0.16  # release lead = lateral velocity * this
+    steer_min_edge_q: float = 0.65     # below this the road fit is too noisy to steer
+    lane_reached_px: float = 12.0      # |own_x - target| under this = change complete
 
     # ---- default calibration (overridden by calibration.json) ----
     latency_ms_default: float = 180.0

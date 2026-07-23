@@ -22,12 +22,14 @@ class Telemetry:
         self._frame_i = 0
         print(f"[telemetry] logging to {self.dir}")
 
-    def log(self, per, plan, fps: float, autopilot: bool, keys: str) -> None:
+    def log(self, per, plan, fps: float, autopilot: bool, keys: str,
+            proc_ms: float = 0.0) -> None:
         # Everything is coerced to plain float/int: numpy scalars (float32) reach
         # here from the vision math and json.dumps cannot serialize them.
         rec = {
             "t": round(time.perf_counter(), 3),
             "fps": round(float(fps), 1),
+            "proc_ms": round(float(proc_ms), 1),
             "auto": bool(autopilot),
             "state": plan.state if plan else None,
             "keys": keys,
@@ -39,9 +41,10 @@ class Telemetry:
             "lanes": [round(float(c), 1) for c in per.lane_centers],
             "clear": [None if c == float("inf") else round(float(c), 1)
                       for c in (plan.clear_dists if plan else [])],
-            "safe": round(float(plan.safe_dist), 1) if plan else None,
+            "ttc": [None if x == float("inf") else round(float(x), 2)
+                    for x in (plan.ttc if plan else [])],
+            "danger": round(float(plan.danger_dist), 1) if plan else None,
             "target_lane": int(plan.target_lane) if plan else None,
-            "steer_tap": round(float(plan.steer_tap_ms), 0) if plan else 0,
             "n_blobs": int(len(per.blobs)),
         }
         self._f.write(json.dumps(rec) + "\n")

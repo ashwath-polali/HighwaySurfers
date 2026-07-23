@@ -1,18 +1,28 @@
-"""Planning + control.
+"""Planning + control, built around how the game actually drives.
+
+Controls are HELD, not tapped:
+  - Gas (W): held to build and hold top speed. Released only to brake.
+  - Brake (S): held only when no reachable lane is safe (a dodge is impossible
+    at this speed), to buy time. Braking costs distance, so it is a last resort.
+  - Steer (A/D): held toward the target lane. Hold length sets the swing size,
+    so we keep holding while far and release early by the coast distance, letting
+    momentum finish the move.
+
+Planning is time-to-collision (TTC) based: we react to how SOON a car reaches us,
+not just how far, so it scales with speed. The bot commits to a lane and only
+re-plans when the current lane is actually threatened, which stops the constant
+lane-thrashing that wrecked earlier runs.
 
 Latency compensation: every obstacle is projected forward by
-(measured input dead time + a maneuver margin) before any decision is made,
-so we always plan against the world as it will be when our keys land.
-
-States:
-  CRUISE      current lane clear -> full gas, stay centered
-  CHANGE      committed lane change toward target_x
-  BRAKE_WAIT  nothing reachable is clear -> shed speed until a gap opens
+(measured input dead time + a margin) before any decision, so we plan against the
+world as it will be when our keys land.
 """
 from dataclasses import dataclass
 from typing import Optional
 
-from .controls import GAS, BRAKE, LEFT, RIGHT
+from .controls import LEFT, RIGHT
+
+INF = float("inf")
 
 
 @dataclass
@@ -20,12 +30,12 @@ class Plan:
     state: str
     target_lane: int
     target_x: Optional[float]
-    gas: bool
-    brake_tap_ms: float          # 0 = no brake
-    steer_key: Optional[str]     # LEFT / RIGHT / None
-    steer_tap_ms: float          # duration of the steering nudge (0 = none)
-    clear_dists: list            # per-lane clear distance (debug/telemetry)
-    safe_dist: float
+    gas: bool                    # hold W
+    brake: bool                  # hold S
+    steer_key: Optional[str]     # hold LEFT / RIGHT / None
+    clear_dists: list            # per-lane nearest obstacle distance (px), debug
+    ttc: list                    # per-lane time-to-collision (s), debug
+    danger_dist: float           # distance that counts as a threat now (telemetry)
 
 
 class Planner:
@@ -39,97 +49,86 @@ class Planner:
     # ------------------------------------------------------------------
     def plan(self, per, tracks: list, fps: float) -> Plan:
         cfg = self.cfg
-        fps = max(fps, 10.0)
+        fps = max(fps, 6.0)
         lanes = per.lane_centers
-        n_lanes = len(lanes)
-        if n_lanes == 0:
-            return Plan("CRUISE", 0, None, True, 0.0, None, 0.0, [], 0.0)
+        n = len(lanes)
+        if n == 0:
+            return Plan("CRUISE", 0, None, True, False, None, [], [], 0.0)
 
-        latency_frames = (self.cal["latency_ms"] / 1000.0) * fps
-        lookahead = latency_frames + cfg.lookahead_extra_s * fps
+        lookahead = (self.cal["latency_ms"] / 1000.0 + cfg.lookahead_extra_s) * fps
+        dy = max(per.dy, cfg.dy_floor)          # forward flow, px/frame
+        speed_px_s = dy * fps
 
-        # --- per-lane clear distance against PREDICTED obstacle positions ---
+        # --- per-lane nearest obstacle (against PREDICTED positions) ---
         own_y = cfg.bev_h
-        clear = [float("inf")] * n_lanes
-        side_block = [False] * n_lanes
+        clear = [INF] * n
+        side_block = [False] * n
         for tr in tracks:
             px, py = tr.predict(lookahead)
-            occupied = self._lanes_of(px, tr.w, lanes)
-            for li in occupied:
+            for li in self._lanes_of(px, tr.w, lanes):
                 dist = own_y - py
                 if dist > 0:
                     clear[li] = min(clear[li], dist)
-                # beside-or-slightly-behind blocks a change into that lane
                 if -cfg.side_margin_behind <= dist <= cfg.side_margin_ahead:
                     side_block[li] = True
 
-        # Speed-scaled safety distance (dy is px/frame of forward flow).
-        safe = min(max(cfg.safe_dist_speed_k * per.dy, cfg.safe_dist_min),
-                   cfg.safe_dist_max)
-        brake_dist = cfg.brake_dist_frac * safe
+        # TTC per lane (seconds until we reach that obstacle at current speed)
+        ttc = [c / speed_px_s if c != INF else INF for c in clear]
+        danger_dist = cfg.ttc_danger_s * speed_px_s
 
-        cur = min(max(per.own_lane, 0), n_lanes - 1)
-
-        # --- state machine ---
+        cur = min(max(per.own_lane, 0), n - 1)
         self.frames_in_state += 1
+
+        # --- state machine (commit to lanes; only re-plan on real threats) ---
         if self.state == "CHANGE":
-            # Bounds-check the target BEFORE indexing: the lane count can shrink
-            # between frames (edges momentarily lost), which would otherwise
-            # index out of range here.
             tl = self.target_lane
-            valid = tl is not None and 0 <= tl < n_lanes
-            done = valid and abs(per.own_x - lanes[tl]) < cfg.steer_tol_px * 1.5
-            if done or not valid or self.frames_in_state > int(3.0 * fps):
+            valid = tl is not None and 0 <= tl < n
+            reached = valid and abs(per.own_x - lanes[tl]) < cfg.lane_reached_px
+            if not valid or reached:
                 self._to("CRUISE")
                 self.target_lane = None
-
-        if self.state == "CRUISE":
-            if clear[cur] < safe:
-                best = self._best_reachable(cur, clear, side_block, n_lanes)
-                if best is not None and clear[best] > clear[cur] * cfg.change_gain_req:
-                    self.target_lane = best
-                    self._to("CHANGE")
-                elif clear[cur] < brake_dist:
-                    self._to("BRAKE_WAIT")
-
-        elif self.state == "CHANGE":
-            tl = self.target_lane
-            # target lane got dangerous mid-change, so re-evaluate
-            if tl is not None and tl < n_lanes and clear[tl] < brake_dist:
-                best = self._best_reachable(cur, clear, side_block, n_lanes)
-                if best is not None and best != tl and clear[best] > clear[tl]:
-                    self.target_lane = best
-                elif clear[cur] >= clear[tl]:
-                    self.target_lane = None
-                    self._to("BRAKE_WAIT" if clear[cur] < brake_dist else "CRUISE")
+            elif self.frames_in_state >= cfg.change_commit_min_frames:
+                # target went dangerous mid-move -> re-pick or brake
+                if ttc[tl] < cfg.ttc_brake_s:
+                    best = self._best_lane(cur, ttc, side_block, n)
+                    if best is not None and ttc[best] > ttc[tl] + cfg.ttc_change_margin_s:
+                        self.target_lane = best
+                        self.frames_in_state = 0
+                    elif ttc[cur] < cfg.ttc_brake_s:
+                        self._to("BRAKE_WAIT")
+                        self.target_lane = None
 
         elif self.state == "BRAKE_WAIT":
-            best = self._best_reachable(cur, clear, side_block, n_lanes)
-            if clear[cur] >= safe:
+            best = self._best_lane(cur, ttc, side_block, n)
+            if ttc[cur] >= cfg.ttc_danger_s:
                 self._to("CRUISE")
-            elif best is not None and clear[best] > max(safe * 0.8, clear[cur] * 1.3):
+            elif best is not None and ttc[best] >= cfg.ttc_danger_s:
                 self.target_lane = best
                 self._to("CHANGE")
 
+        else:  # CRUISE
+            if ttc[cur] < cfg.ttc_danger_s:
+                best = self._best_lane(cur, ttc, side_block, n)
+                if best is not None and ttc[best] > ttc[cur] + cfg.ttc_change_margin_s:
+                    self.target_lane = best
+                    self._to("CHANGE")
+                elif ttc[cur] < cfg.ttc_brake_s:
+                    self._to("BRAKE_WAIT")
+
         # --- outputs ---
-        target_lane = self.target_lane if (
-            self.state == "CHANGE" and self.target_lane is not None) else cur
-        target_lane = min(max(target_lane, 0), n_lanes - 1)
+        if self.state == "CHANGE" and self.target_lane is not None \
+                and 0 <= self.target_lane < n:
+            target_lane = self.target_lane
+        else:
+            target_lane = cur
         target_x = lanes[target_lane]
 
-        effective_clear = min(clear[cur], clear[target_lane]) \
-            if self.state == "CHANGE" else clear[cur]
-        gas = effective_clear > safe * 0.75 and self.state != "BRAKE_WAIT"
-        brake_ms = 0.0
-        if self.state == "BRAKE_WAIT" or effective_clear < brake_dist:
-            # deeper deficit means a longer tap
-            deficit = 1.0 - min(effective_clear / max(brake_dist, 1e-6), 1.0)
-            brake_ms = self.cfg.brake_tap_ms * (0.5 + 0.5 * deficit)
+        brake = self.state == "BRAKE_WAIT"
+        gas = not brake                          # hold W to keep speed unless braking
+        steer_key = self._steer(per, target_x, fps)
 
-        steer_key, steer_tap_ms = self._steer(per, target_x, fps)
-
-        return Plan(self.state, target_lane, target_x, gas, brake_ms, steer_key,
-                    steer_tap_ms, clear, safe)
+        return Plan(self.state, target_lane, target_x, gas, brake, steer_key,
+                    clear, ttc, danger_dist)
 
     # ------------------------------------------------------------------
     def _to(self, state: str) -> None:
@@ -140,51 +139,44 @@ class Planner:
     def _lanes_of(self, x: float, w: float, lanes: list) -> list:
         """Lane indices a blob at center x with width w occupies."""
         cfg = self.cfg
-        half = max(w / 2, cfg.straddle_frac * cfg.lane_width_guess_px)
-        out = []
-        for i, c in enumerate(lanes):
-            lane_half = (lanes[1] - lanes[0]) / 2 if len(lanes) > 1 else cfg.lane_width_guess_px / 2
-            if abs(x - c) < lane_half + half * 0.6:
-                out.append(i)
+        lane_w = (lanes[1] - lanes[0]) if len(lanes) > 1 else cfg.lane_width_guess_px
+        half = max(w / 2, cfg.straddle_frac * lane_w)
+        out = [i for i, c in enumerate(lanes) if abs(x - c) < lane_w / 2 + half * 0.6]
         return out or [min(range(len(lanes)), key=lambda i: abs(x - lanes[i]))]
 
-    def _best_reachable(self, cur: int, clear: list, side_block: list,
-                        n_lanes: int) -> Optional[int]:
-        """Adjacent lanes first; a 2-away lane only if the intermediate is safe."""
+    def _best_lane(self, cur: int, ttc: list, side_block: list, n: int) -> Optional[int]:
+        """Safest reachable lane (highest TTC). Adjacent first; a 2-away lane
+        only if the lane between it and us is itself safe to cross."""
         cands = []
         for d in (-1, 1):
             li = cur + d
-            if 0 <= li < n_lanes and not side_block[li]:
-                cands.append((clear[li], li))
+            if 0 <= li < n and not side_block[li]:
+                cands.append((ttc[li], li))
         for d in (-2, 2):
-            li = cur + d
-            mid = cur + d // 2
-            if (0 <= li < n_lanes and not side_block[li]
-                    and not side_block[mid] and clear[mid] > self.cfg.safe_dist_min):
-                cands.append((clear[li] * 0.9, li))  # slight penalty: longer maneuver
+            li, mid = cur + d, cur + d // 2
+            if (0 <= li < n and not side_block[li] and not side_block[mid]
+                    and ttc[mid] >= self.cfg.ttc_danger_s):
+                cands.append((ttc[li] - 0.2, li))  # small penalty: longer move
         if not cands:
             return None
-        best_clear, best = max(cands)
-        return best if best_clear > 0 else None
+        best_ttc, best = max(cands)
+        return best if best_ttc > 0 else None
 
     # ------------------------------------------------------------------
-    def _steer(self, per, target_x: float, fps: float):
-        """Return (key, tap_ms): a gentle nudge toward the target lane, or
-        (None, 0) to hold. own_x/own_vx are measured in rectified road space, so
-        press RIGHT to raise own_x, LEFT to lower it.
+    def _steer(self, per, target_x: float, fps: float) -> Optional[str]:
+        """Hold A/D toward the target, release early by the coast distance.
 
-        Two guards keep it from chasing noise: skip entirely when the road fit is
-        unreliable (edge_quality low), and aim at where the car will COAST to,
-        not where it is now, so we don't overshoot and oscillate.
+        own_x/own_vx are in rectified road space: press RIGHT to raise own_x,
+        LEFT to lower it. Releasing while still `lead` px short lets the car's
+        lateral momentum carry it the rest of the way (that is how a real swing
+        finishes), which prevents the overshoot-and-oscillate failure.
         """
         cfg = self.cfg
         if per.edge_quality < cfg.steer_min_edge_q:
-            return None, 0.0
-        coast_frames = self.cal["steer_coast_s"] * fps
-        predicted = per.own_x + per.own_vx * coast_frames   # where we'll drift to
-        perr = target_x - predicted                         # + = still need right
-        if abs(perr) < cfg.steer_deadband_px:
-            return None, 0.0
-        frac = min(abs(perr) / 60.0, 1.0)
-        tap = cfg.steer_tap_min_ms + (cfg.steer_tap_max_ms - cfg.steer_tap_min_ms) * frac
-        return (RIGHT if perr > 0 else LEFT), tap
+            return None
+        lead = per.own_vx * (cfg.steer_release_lead_s * fps)  # px we will coast
+        predicted = per.own_x + lead
+        remaining = target_x - predicted
+        if abs(remaining) < cfg.steer_deadband_px:
+            return None
+        return RIGHT if remaining > 0 else LEFT
