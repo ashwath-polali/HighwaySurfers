@@ -105,7 +105,10 @@ class Planner:
                     # the step must not cross a car on either row it touches
                     if not span_clear(r, c2, c) or not span_clear(r - 1, c2, c):
                         continue
-                    cand = prev[c2] + abs(c - c2)
+                    # lateral moves cost MORE the farther out they happen, so the
+                    # route front-loads its shift: it gets into the gap lane early
+                    # instead of driving straight and swerving at the last row.
+                    cand = prev[c2] + abs(c - c2) * (1.0 + cfg.early_bias * r / NR)
                     if cand < best:
                         best, bp = cand, c2
                 if bp >= 0:

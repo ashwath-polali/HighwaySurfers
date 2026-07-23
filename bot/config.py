@@ -89,12 +89,14 @@ class Config:
     safety_margin_px: float = 7.0     # extra clearance around each car
     pad_y_px: float = 16.0            # obstacle length padding along travel
     max_col_step: int = 3             # most columns the route may shift per row
-    steer_target_row: int = 2         # steer toward the route point this far ahead
+    early_bias: float = 2.5           # front-load moves: pre-position into the gap
+                                      # early instead of swerving at the last row
+    steer_target_row: int = 3         # steer toward the route point this far ahead
     steer_deadband_px: float = 9.0    # within this of the route -> don't steer
     # Route reaches at least slow_depth rows -> full gas; between brake and slow
     # -> coast; brake_depth or fewer -> brake. (grid has grid_rows rows.)
-    brake_depth: int = 1              # route blocked this soon -> brake
-    slow_depth: int = 4               # route shallower than this -> coast (ease off)
+    brake_depth: int = 0              # only a fully blocked road -> brake
+    slow_depth: int = 3               # route shallower than this -> coast (ease off)
     path_stick_bias: float = 0.9      # prefer last frame's route (kills flip-flop)
 
     # ---- default calibration (overridden by calibration.json) ----
