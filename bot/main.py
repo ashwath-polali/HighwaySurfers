@@ -180,14 +180,14 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
             prev_t = t
 
             # HARD GATE (passive): if autopilot is on but the game is not the
-            # foreground window, do nothing at all — no keys, no clicks, and no
-            # window manipulation (forcing focus minimizes a fullscreen game).
-            # Just wait for the player to focus the game.
+            # foreground window, send nothing and touch no window state (forcing
+            # focus minimizes a fullscreen game). Just wait for the player to
+            # focus the game.
             if hotkeys.autopilot and not focused():
                 controls.release_all()
                 controls.update()
                 if t - last_hint_t > 4.0:
-                    print("[drive] waiting — click the game window to let the "
+                    print("[drive] waiting: click the game window to let the "
                           "bot drive (it will not touch anything else).")
                     last_hint_t = t
                 was_ui = True

@@ -67,7 +67,7 @@ class Config:
     vel_ema_alpha: float = 0.45
 
     # ---- planning: time-to-collision based (distances in BEV px) ----
-    # We react to how SOON a car arrives, not just how far it is, so behavior
+    # We react to how SOON a car arrives rather than how far it is, so behavior
     # scales with speed. The bot commits to a lane and only re-plans when the
     # current lane is actually threatened, instead of chasing the best lane.
     lookahead_extra_s: float = 0.20   # prediction margin on top of measured latency
@@ -83,10 +83,15 @@ class Config:
     # ---- steering: HELD keys (hold length = swing size, per the game) ----
     # Hold A/D toward the target lane and release early by the distance the car
     # will still coast, so momentum finishes the swing without overshooting.
-    steer_deadband_px: float = 10.0    # within this of target (after coast) -> release
-    steer_release_lead_s: float = 0.16  # release lead = lateral velocity * this
+    # Be IN the lane, not pixel-centered. Hysteresis: once steering stops we
+    # don't start again until the car has drifted past the (larger) engage band,
+    # which stops the constant micro-correction chatter under input lag. A short
+    # coast between direction reversals kills the remaining flip-flop.
+    steer_deadband_px: float = 16.0    # inside this of target -> release the key
+    steer_engage_px: float = 34.0      # must exceed this (when idle) to start steering
+    steer_reversal_frames: int = 3     # coast at least this many frames before flipping
     steer_min_edge_q: float = 0.65     # below this the road fit is too noisy to steer
-    lane_reached_px: float = 12.0      # |own_x - target| under this = change complete
+    lane_reached_px: float = 20.0      # |own_x - target| under this = change complete
 
     # ---- default calibration (overridden by calibration.json) ----
     latency_ms_default: float = 180.0
