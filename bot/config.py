@@ -78,7 +78,14 @@ class Config:
     straddle_frac: float = 0.28      # blob within this frac of lane width of a boundary occupies both lanes
 
     # ---- steering controller ----
-    steer_tol_px: float = 5.0        # deadband around target
+    # The game runs at very high responsiveness, so we nudge with short taps and
+    # let the car settle between them instead of holding a key (which oversteers).
+    steer_tol_px: float = 6.0        # lane-change completion tolerance
+    steer_deadband_px: float = 12.0  # don't steer within this of the target
+    steer_tap_min_ms: int = 22       # gentlest nudge
+    steer_tap_max_ms: int = 80       # biggest single nudge
+    steer_cooldown_s: float = 0.10   # minimum gap between steer taps (let it settle)
+    steer_min_edge_q: float = 0.7    # below this the road fit is too noisy to steer on
     brake_tap_ms: int = 140
 
     # ---- default calibration (overridden by calibration.json) ----

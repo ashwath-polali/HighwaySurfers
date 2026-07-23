@@ -172,6 +172,7 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
 
     fps, prev_t = 0.0, None
     last_brake_t = 0.0
+    last_steer_t = 0.0
     last_focus_t = 0.0
     crash_streak = 0
     was_ui = True   # force a canvas-focus click when the first run begins
@@ -220,16 +221,11 @@ def mode_drive(cfg, overlay: bool, autostart: bool = True) -> None:
                         last_brake_t = t
                     else:
                         controls.set_key(GAS, plan.gas)
-                    # steering: exactly one of L/R/none
-                    if plan.steer_key == LEFT:
-                        controls.set_key(RIGHT, False)
-                        controls.set_key(LEFT, True)
-                    elif plan.steer_key == RIGHT:
-                        controls.set_key(LEFT, False)
-                        controls.set_key(RIGHT, True)
-                    else:
-                        controls.set_key(LEFT, False)
-                        controls.set_key(RIGHT, False)
+                    # steering: a short tap, then let the car settle before the
+                    # next one (holding the key oversteers at high responsiveness)
+                    if plan.steer_key and t - last_steer_t > cfg.steer_cooldown_s:
+                        controls.tap(plan.steer_key, plan.steer_tap_ms)
+                        last_steer_t = t
                 else:
                     controls.release_all()
                 controls.update()

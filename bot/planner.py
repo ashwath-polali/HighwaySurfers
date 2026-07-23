@@ -23,6 +23,7 @@ class Plan:
     gas: bool
     brake_tap_ms: float          # 0 = no brake
     steer_key: Optional[str]     # LEFT / RIGHT / None
+    steer_tap_ms: float          # duration of the steering nudge (0 = none)
     clear_dists: list            # per-lane clear distance (debug/telemetry)
     safe_dist: float
 
@@ -42,7 +43,7 @@ class Planner:
         lanes = per.lane_centers
         n_lanes = len(lanes)
         if n_lanes == 0:
-            return Plan("CRUISE", 0, None, True, 0.0, None, [], 0.0)
+            return Plan("CRUISE", 0, None, True, 0.0, None, 0.0, [], 0.0)
 
         latency_frames = (self.cal["latency_ms"] / 1000.0) * fps
         lookahead = latency_frames + cfg.lookahead_extra_s * fps
@@ -125,10 +126,10 @@ class Planner:
             deficit = 1.0 - min(effective_clear / max(brake_dist, 1e-6), 1.0)
             brake_ms = self.cfg.brake_tap_ms * (0.5 + 0.5 * deficit)
 
-        steer_key = self._steer(per, target_x, fps)
+        steer_key, steer_tap_ms = self._steer(per, target_x, fps)
 
         return Plan(self.state, target_lane, target_x, gas, brake_ms, steer_key,
-                    clear, safe)
+                    steer_tap_ms, clear, safe)
 
     # ------------------------------------------------------------------
     def _to(self, state: str) -> None:
@@ -167,22 +168,23 @@ class Planner:
         return best if best_clear > 0 else None
 
     # ------------------------------------------------------------------
-    def _steer(self, per, target_x: float, fps: float) -> Optional[str]:
-        """Predictive bang-bang: hold toward the target, release early by the
-        distance the car will still drift (coast) after the key comes up.
+    def _steer(self, per, target_x: float, fps: float):
+        """Return (key, tap_ms): a gentle nudge toward the target lane, or
+        (None, 0) to hold. own_x/own_vx are measured in rectified road space, so
+        press RIGHT to raise own_x, LEFT to lower it.
 
-        own_x and own_vx are both measured directly in rectified road space, so
-        the sign is straightforward: press RIGHT to raise own_x, LEFT to lower it.
+        Two guards keep it from chasing noise: skip entirely when the road fit is
+        unreliable (edge_quality low), and aim at where the car will COAST to,
+        not where it is now, so we don't overshoot and oscillate.
         """
         cfg = self.cfg
-        err = target_x - per.own_x                 # + = need to move right
-        v_own = per.own_vx * fps                   # px/s, + = drifting right
-        coast = v_own * self.cal["steer_coast_s"]  # px we'll drift after release
-        remaining = err - coast                    # error left once coasting settles
-        if abs(err) < cfg.steer_tol_px and abs(v_own) < 40:
-            return None
-        if remaining > cfg.steer_tol_px * 0.6:
-            return RIGHT
-        if remaining < -cfg.steer_tol_px * 0.6:
-            return LEFT
-        return None
+        if per.edge_quality < cfg.steer_min_edge_q:
+            return None, 0.0
+        coast_frames = self.cal["steer_coast_s"] * fps
+        predicted = per.own_x + per.own_vx * coast_frames   # where we'll drift to
+        perr = target_x - predicted                         # + = still need right
+        if abs(perr) < cfg.steer_deadband_px:
+            return None, 0.0
+        frac = min(abs(perr) / 60.0, 1.0)
+        tap = cfg.steer_tap_min_ms + (cfg.steer_tap_max_ms - cfg.steer_tap_min_ms) * frac
+        return (RIGHT if perr > 0 else LEFT), tap

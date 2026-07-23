@@ -161,12 +161,22 @@ class Vision:
             obstacle_u8, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
         blobs = []
+        lane_w_est = self.lane_width if self.lane_width > 1 else cfg.lane_width_guess_px
         n, _labels, stats, centroids = cv2.connectedComponentsWithStats(obstacle_u8)
         for i in range(1, n):
             x, y, bw, bh, area = stats[i]
             if area < cfg.min_blob_area:
                 continue
-            blobs.append((float(centroids[i][0]), float(y + bh),
+            cy_bottom = y + bh
+            # A single car spans about one lane. Anything much wider is HUD text
+            # or an own-car/edge artifact, not traffic; a wide band hugging the
+            # very bottom is the player car. Both produced a phantom "wall" that
+            # forced needless braking, so drop them.
+            if bw > 2.4 * lane_w_est:
+                continue
+            if cy_bottom >= cfg.bev_h - 4 and bw > 0.5 * cfg.bev_w:
+                continue
+            blobs.append((float(centroids[i][0]), float(cy_bottom),
                           float(bw), float(bh), int(area)))
 
         # --- lane model (vertical lines in rectified space) ---
@@ -186,8 +196,10 @@ class Vision:
             self.prev_own_x_raw = own_x_raw
         vx_inst = own_x_raw - self.prev_own_x_raw
         self.prev_own_x_raw = own_x_raw
-        self.own_x_ema = 0.55 * self.own_x_ema + 0.45 * own_x_raw
-        self.own_vx_ema = 0.6 * self.own_vx_ema + 0.4 * vx_inst
+        # Heavier smoothing: the raw edge fit jitters a few px per frame, which
+        # otherwise fabricates a lateral velocity the steering chases.
+        self.own_x_ema = 0.7 * self.own_x_ema + 0.3 * own_x_raw
+        self.own_vx_ema = 0.7 * self.own_vx_ema + 0.3 * vx_inst
 
         # --- forward flow from dash phase ---
         row_profile = rwhite.sum(axis=1).astype(np.float32)

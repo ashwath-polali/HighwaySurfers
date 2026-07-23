@@ -41,6 +41,7 @@ class Telemetry:
                       for c in (plan.clear_dists if plan else [])],
             "safe": round(float(plan.safe_dist), 1) if plan else None,
             "target_lane": int(plan.target_lane) if plan else None,
+            "steer_tap": round(float(plan.steer_tap_ms), 0) if plan else 0,
             "n_blobs": int(len(per.blobs)),
         }
         self._f.write(json.dumps(rec) + "\n")
