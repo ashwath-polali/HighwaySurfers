@@ -70,7 +70,7 @@ class Config:
     track_match_x: float = 26.0      # px gate across lanes
     track_match_y: float = 110.0     # px gate along travel direction
     track_max_missed: int = 5
-    track_min_age: int = 2
+    track_min_age: int = 1
     vel_ema_alpha: float = 0.45
 
     # ---- planning: time-to-collision based (distances in BEV px) ----
@@ -89,10 +89,13 @@ class Config:
     safety_margin_px: float = 7.0     # extra clearance around each car
     pad_y_px: float = 16.0            # obstacle length padding along travel
     max_col_step: int = 3             # most columns the route may shift per row
-    early_bias: float = 2.5           # front-load moves: pre-position into the gap
+    early_bias: float = 0.5           # front-load moves: pre-position into the gap
                                       # early instead of swerving at the last row
     steer_target_row: int = 3         # steer toward the route point this far ahead
-    steer_deadband_px: float = 9.0    # within this of the route -> don't steer
+    steer_deadband_px: float = 12.0   # within this of the route -> don't steer
+    path_half_px: float = 26.0        # half-width of the column that must be clear
+    go_straight_px: float = 190.0     # nearest car in our column farther than this
+                                      # -> just hold straight (like a human)
     # Route reaches at least slow_depth rows -> full gas; between brake and slow
     # -> coast; brake_depth or fewer -> brake. (grid has grid_rows rows.)
     brake_depth: int = 0              # only a fully blocked road -> brake

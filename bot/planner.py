@@ -150,11 +150,26 @@ class Planner:
         target_x = col_x[target_col]
         self.prev_target_col = cols[min(1, len(cols) - 1)]
 
+        # How close is the nearest car actually in our column right now?
+        center_clear = INF
+        blocker_x = None
+        for tr in tracks:
+            px, _py = tr.predict(lookahead)
+            d = car_y - tr.y
+            if d > 0 and abs(px - car_x) < cfg.path_half_px + tr.w / 2 and d < center_clear:
+                center_clear, blocker_x = d, px
+
         err = target_x - car_x
-        if abs(err) < cfg.steer_deadband_px:
-            steer = None
+        if center_clear > cfg.go_straight_px:
+            steer = None                         # lane ahead is open: hold straight
+        elif abs(err) >= cfg.steer_deadband_px:
+            steer = RIGHT if err > 0 else LEFT   # follow the route around the car
         else:
-            steer = RIGHT if err > 0 else LEFT   # target to the right -> press D
+            steer = None
+        # Hard safety: a car is close in our lane but the route didn't pick a side.
+        # Never coast into it; dodge away from it (toward the emptier side).
+        if steer is None and center_clear <= cfg.go_straight_px and blocker_x is not None:
+            steer = LEFT if blocker_x >= car_x else RIGHT
 
         # --- speed: a human NEVER brakes here; they feather the gas by density.
         # Hold gas (accelerate toward top speed) when the route runs deep = open
