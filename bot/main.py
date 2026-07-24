@@ -113,18 +113,30 @@ def mode_record(cfg) -> None:
     print("[record] PLAY NORMALLY. It logs your keys + the screen while the game "
           "is focused. Press F9 when done.")
     fps, prev_t, last_status = 0.0, None, 0.0
+    frame_no, frame_saves = 0, 0
     try:
         while not hotkeys.quit:
             frame, t = capture.read()
             if frame is None:
                 continue
+            frame_no += 1
             if prev_t is not None:
                 inst = 1.0 / max(t - prev_t, 1e-6)
                 fps = 0.9 * fps + 0.1 * inst if fps else inst
             prev_t = t
-            per = vision.process(frame)
-            if foreground_is_game(cfg.window_title):
-                recorder.log(per, watcher.snapshot(), fps)
+            live = foreground_is_game(cfg.window_title)
+            save_this = live and frame_saves < 200 and frame_no % 12 == 0
+            per = vision.process(frame, want_masks=save_this)
+            if live:
+                keys = watcher.snapshot()
+                recorder.log(per, keys, fps)
+                if save_this:
+                    vis, bev = vision.draw_debug(frame, per, None)
+                    pressed = "".join(c.upper() if keys[c] else "-" for c in "wasd")
+                    cv2.putText(bev, pressed, (4, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5, (0, 255, 0), 2)
+                    cv2.imwrite(os.path.join(recorder.dir, f"f{frame_no:05d}_bev.jpg"), bev)
+                    frame_saves += 1
             if t - last_status > 2.0:
                 k = watcher.snapshot()
                 pressed = "".join(c.upper() if k[c] else "-" for c in "wasd")
