@@ -85,8 +85,8 @@ class Config:
     road_edge_margin_px: float = 16.0  # keep this far inside the road edge
     grid_cols: int = 23               # lateral resolution of the plan
     grid_rows: int = 12               # depth (lookahead) resolution
-    player_half_px: float = 20.0      # our car half-width, for obstacle inflation
-    safety_margin_px: float = 7.0     # extra clearance around each car
+    player_half_px: float = 16.0      # our car half-width, for obstacle inflation
+    safety_margin_px: float = 4.0     # extra clearance around each car
     pad_y_px: float = 16.0            # obstacle length padding along travel
     max_col_step: int = 3             # most columns the route may shift per row
     early_bias: float = 0.5           # front-load moves: pre-position into the gap
@@ -96,6 +96,14 @@ class Config:
     path_half_px: float = 26.0        # half-width of the column that must be clear
     go_straight_px: float = 190.0     # nearest car in our column farther than this
                                       # -> just hold straight (like a human)
+    wall_band_px: float = 55.0        # cars within this depth of the closest = one wall
+    min_center_gap: float = 5.0       # min car-center room in an (inflated) gap
+    overshoot_buf: float = 9.0        # aim this far inside a gap edge (overshoot room)
+    reach_ratio: float = 1.0          # px lateral reachable per px forward (between walls)
+    gap_hold_bonus: float = 3.0       # commit to the gap we are already threading
+    gap_hold_tol: float = 8.0         # ref counts as inside a gap within this
+    close_px: float = 90.0            # wall this close + still needing to move -> ease gas
+    slow_err_px: float = 60.0         # ease gas while target is farther than this (big swing)
     # Route reaches at least slow_depth rows -> full gas; between brake and slow
     # -> coast; brake_depth or fewer -> brake. (grid has grid_rows rows.)
     brake_depth: int = 0              # only a fully blocked road -> brake

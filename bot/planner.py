@@ -45,8 +45,136 @@ class Planner:
         self.cal = calibration
         self.state = "CRUISE"
         self.prev_target_col: Optional[int] = None
+        self.prev_target_x: Optional[float] = None
 
     def plan(self, per, tracks: list, fps: float) -> Plan:
+        cfg = self.cfg
+        fps = max(fps, 6.0)
+        car_x, car_y = per.car_x, cfg.bev_h
+        lookahead = (self.cal["latency_ms"] / 1000.0 + cfg.lookahead_extra_s) * fps
+        return self._plan_gaps(per, tracks, fps, car_x, car_y, lookahead)
+
+    # ------------------------------------------------------------------
+    def _plan_gaps(self, per, tracks, fps, car_x, car_y, lookahead) -> Plan:
+        """Thread the gap: find the free lateral intervals in the wall ahead and
+        aim at the nearest safe point inside one. Robust where the grid DP gave
+        up (it collapsed to no-route when a wall got close)."""
+        cfg = self.cfg
+        infl = cfg.player_half_px + cfg.safety_margin_px
+        rl, rr = per.road_left, per.road_right
+
+        near = []
+        for tr in tracks:
+            px, _py = tr.predict(lookahead)
+            d = car_y - tr.y
+            if d > 0:
+                near.append((px, d, tr.w))
+        n_threats = len(near)
+        if not near:
+            return Plan("CRUISE", car_x, True, False, None, 0, [car_x, car_x], 6)
+
+        # --- group cars into walls (layers by depth) and find each wall's gaps ---
+        layers = []
+        for px, d, w in sorted(near, key=lambda o: o[1]):
+            if layers and d - layers[-1]["d0"] <= cfg.wall_band_px:
+                layers[-1]["obs"].append((px, w))
+                layers[-1]["d"] = (layers[-1]["d"] + d) / 2
+            else:
+                layers.append({"d0": d, "d": d, "obs": [(px, w)]})
+        for L in layers:
+            L["gaps"] = self._gaps(L["obs"], rl, rr, infl, cfg.min_center_gap)
+        d_min = layers[0]["d"]
+        center_clear = min((d for px, d, w in near
+                            if abs(px - car_x) < cfg.path_half_px + w / 2), default=INF)
+
+        # --- pick the nearest-wall gap that leads deepest through later walls ---
+        ref = self.prev_target_x if self.prev_target_x is not None else car_x
+        best = self._choose_gap(layers, car_x, ref, cfg)
+        if best is None:                          # no fitting gap: aim at widest
+            allg = layers[0]["gaps"] or [(rl, rr)]
+            widest = max(allg, key=lambda ab: ab[1] - ab[0])
+            target_x = (widest[0] + widest[1]) / 2
+        else:
+            a, b = best
+            # Aim so the car ends up safely INSIDE the gap: stay put if it already
+            # is, else move to a buffered point (room to absorb overshoot). Buffer
+            # shrinks for tight gaps (then we aim at the center).
+            buf = min(cfg.overshoot_buf, (b - a) / 2)
+            target_x = max(a + buf, min(car_x, b - buf))
+        self.prev_target_x = target_x
+
+        err = target_x - car_x
+        steer = (RIGHT if err > 0 else LEFT) if abs(err) >= cfg.steer_deadband_px else None
+        # Full speed when threading straight; ease off (coast) while making a big
+        # swing so there is time to complete it. This is why a human runs ~300 on
+        # hard and ~480 on easy without ever braking.
+        gas = not (steer is not None and abs(err) > cfg.slow_err_px)
+        return Plan("CHANGE" if steer else "CRUISE", target_x, gas, False, steer,
+                    n_threats, [car_x, target_x], len(layers))
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _gaps(obs, rl, rr, infl, min_gap):
+        """Intervals where the CAR CENTER can safely sit. Cars are inflated by our
+        own half-width + safety, so any positive interval already fits the car;
+        we only drop slivers narrower than min_gap. (Do not also subtract the car
+        width when aiming, or a real gap vanishes.)"""
+        blocked = sorted((max(rl, px - w / 2 - infl), min(rr, px + w / 2 + infl))
+                         for px, w in obs)
+        merged = []
+        for a, b in blocked:
+            if merged and a <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        free, cur = [], rl
+        for a, b in merged:
+            if a - cur >= 0:
+                free.append((cur, a))
+            cur = max(cur, b)
+        free.append((cur, rr))
+        return [(a, b) for a, b in free if b - a >= min_gap]
+
+    def _choose_gap(self, layers, car_x, ref_x, cfg):
+        """Nearest-wall gap that reaches through the most subsequent walls; ties
+        broken toward last frame's aim (stability). Reachability: between walls we
+        can move ~reach_ratio px laterally per px of forward distance."""
+        from functools import lru_cache
+
+        def overlap_reach(g1, d1, g2, d2):
+            reach = cfg.reach_ratio * abs(d2 - d1) + 1.0
+            return g1[0] - reach <= g2[1] and g2[0] <= g1[1] + reach
+
+        @lru_cache(maxsize=None)
+        def depth_from(k, gi):
+            if k + 1 >= len(layers):
+                return k
+            g = layers[k]["gaps"][gi]
+            best = k
+            for gj, g2 in enumerate(layers[k + 1]["gaps"]):
+                if overlap_reach(g, layers[k]["d"], g2, layers[k + 1]["d"]):
+                    best = max(best, depth_from(k + 1, gj))
+            return best
+
+        gaps0 = layers[0]["gaps"]
+        if not gaps0:
+            return None
+        scored = []
+        for gi, g in enumerate(gaps0):
+            reach_depth = depth_from(0, gi)
+            aim = max(g[0], min(ref_x, g[1]))
+            # Strongly COMMIT to the gap we were already threading (the one holding
+            # last frame's aim): give it a big reach bonus so we only switch gaps
+            # when another reaches several walls deeper. Otherwise the choice
+            # flip-flops between gaps and the target swings into a car.
+            holding = g[0] - cfg.gap_hold_tol <= ref_x <= g[1] + cfg.gap_hold_tol
+            score = reach_depth + (cfg.gap_hold_bonus if holding else 0)
+            scored.append((-score, abs(aim - ref_x), abs(aim - car_x), g))
+        scored.sort()
+        return scored[0][3]
+
+    # ------------------------------------------------------------------
+    def _plan_dp(self, per, tracks: list, fps: float) -> Plan:
         cfg = self.cfg
         fps = max(fps, 6.0)
         car_x, car_y = per.car_x, cfg.bev_h
@@ -55,6 +183,7 @@ class Planner:
         rr = per.road_right - cfg.road_edge_margin_px
         if rr - rl < 20:                       # no usable road this frame
             return Plan("CRUISE", car_x, True, False, None, 0)
+        lookahead = (self.cal["latency_ms"] / 1000.0 + cfg.lookahead_extra_s) * fps
 
         col_x = [rl + (c + 0.5) / NC * (rr - rl) for c in range(NC)]
         row_y = [car_y * (1.0 - (r + 0.5) / NR) for r in range(NR)]  # r0 near..far
