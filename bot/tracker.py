@@ -57,7 +57,18 @@ class Tracker:
             a = cfg.vel_ema_alpha
             tr.vx = (1 - a) * tr.vx + a * (bx - tr.x)
             tr.vy = (1 - a) * tr.vy + a * (by - tr.y)
-            tr.x, tr.y, tr.w, tr.h = bx, by, bw, bh
+            # Smooth position: blend the (noisy) measurement with the predicted
+            # position (predict + correct), and REJECT single-frame outlier jumps
+            # (detection occasionally leaps 30-200px live). Feeding those straight
+            # to the planner makes the gaps jump and the car swerves into cars.
+            pa, mj = cfg.pos_ema_alpha, cfg.track_max_jump
+            predx, predy = tr.x + tr.vx, tr.y + tr.vy
+            bx = predx + max(-mj, min(bx - predx, mj))
+            by = predy + max(-mj, min(by - predy, mj))
+            tr.x = pa * bx + (1 - pa) * predx
+            tr.y = pa * by + (1 - pa) * predy
+            tr.w = 0.6 * tr.w + 0.4 * bw
+            tr.h = 0.6 * tr.h + 0.4 * bh
             tr.age += 1
             tr.missed = 0
             if bi in unmatched:

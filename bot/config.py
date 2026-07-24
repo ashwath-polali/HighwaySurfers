@@ -69,9 +69,11 @@ class Config:
     # drops fast closers and their velocity never gets estimated.
     track_match_x: float = 26.0      # px gate across lanes
     track_match_y: float = 110.0     # px gate along travel direction
-    track_max_missed: int = 5
-    track_min_age: int = 1
+    track_max_missed: int = 8
+    track_min_age: int = 3
     vel_ema_alpha: float = 0.45
+    pos_ema_alpha: float = 0.3       # position smoothing vs prediction (noise robustness)
+    track_max_jump: float = 14.0     # reject per-frame position jumps beyond this (px)
 
     # ---- planning: time-to-collision based (distances in BEV px) ----
     # We react to how SOON a car arrives rather than how far it is, so behavior
@@ -92,7 +94,7 @@ class Config:
     early_bias: float = 0.5           # front-load moves: pre-position into the gap
                                       # early instead of swerving at the last row
     steer_target_row: int = 3         # steer toward the route point this far ahead
-    steer_deadband_px: float = 12.0   # within this of the route -> don't steer
+    steer_deadband_px: float = 18.0   # within this of the route -> don't steer (noise deadband)
     path_half_px: float = 26.0        # half-width of the column that must be clear
     go_straight_px: float = 190.0     # nearest car in our column farther than this
                                       # -> just hold straight (like a human)
