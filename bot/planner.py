@@ -156,15 +156,12 @@ class Planner:
         else:
             steer = RIGHT if err > 0 else LEFT   # target to the right -> press D
 
-        # --- speed: only ease off when the road ahead genuinely tightens ---
-        if depth <= cfg.brake_depth:
-            brake, gas = True, False
-            self.state = "BRAKE_WAIT"
-        elif depth < cfg.slow_depth:
-            brake, gas = False, False            # coast, it is getting tight
-            self.state = "SLOW"
-        else:
-            brake, gas = False, True
-            self.state = "CHANGE" if steer else "CRUISE"
+        # --- speed: a human NEVER brakes here; they feather the gas by density.
+        # Hold gas (accelerate toward top speed) when the route runs deep = open
+        # road; ease off (coast) when it is dense so we hold a controllable speed.
+        # We do not brake: braking bogs the car down, which is what wrecked runs.
+        brake = False
+        gas = depth >= cfg.slow_depth
+        self.state = "CHANGE" if steer else ("CRUISE" if gas else "SLOW")
 
         return Plan(self.state, target_x, gas, brake, steer, n_threats, path_x, depth)
